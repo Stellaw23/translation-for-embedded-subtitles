@@ -234,23 +234,29 @@ function captureVideoFrame(video, region) {
   return canvas;
 }
 
-let tesseractWorker = null;
-
-async function initTesseract() {
-  if (tesseractWorker) return;
-  // Tesseract.js v4: worker and language data loaded from CDN
-  tesseractWorker = await Tesseract.createWorker('kor+jpn', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/worker.min.js',
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4/tesseract-core.wasm.js',
-    logger: () => {}
-  });
-}
-
+// OCR runs in offscreen document (extension context, no page CSP restrictions).
+// Content script just captures the frame and sends the dataUrl to background.
 async function runOCR(canvas) {
-  await initTesseract();
-  const { data } = await tesseractWorker.recognize(canvas);
-  return data.text.trim().replace(/\s+/g, ' ');
+  let dataUrl;
+  try {
+    dataUrl = canvas.toDataURL('image/png');
+  } catch (e) {
+    throw new Error('Canvas tainted (cross-origin video): ' + e.message);
+  }
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'OCR', dataUrl }, (res) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!res || !res.ok) {
+        reject(new Error(res?.error || 'OCR failed'));
+        return;
+      }
+      console.log('[Vlog OCR] recognized:', JSON.stringify(res.text));
+      resolve(res.text);
+    });
+  });
 }
 
 let ocrInterval = null;
@@ -268,8 +274,8 @@ async function startOcrPolling(video) {
       if (!lang || !text || text === lastOcrText) return;
       lastOcrText = text;
       showOcrOverlay(video, text, lang);
-    } catch (_) {
-      // silent fail (Tesseract initializing, video paused, etc.)
+    } catch (e) {
+      console.error('[Vlog OCR] error:', e);
     }
   }, 2000);
 }

@@ -3,7 +3,10 @@
   "name": "Vlog 字幕翻译",
   "version": "1.0.0",
   "description": "韩文/日文 Vlog 字幕实时翻译学习助手",
-  "permissions": ["storage", "scripting", "activeTab"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' blob: 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://www.youtube.com/*",
@@ -16,7 +19,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["libs/tesseract.min.js", "content.js"],
+      "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

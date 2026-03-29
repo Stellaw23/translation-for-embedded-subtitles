@@ -24,6 +24,20 @@ function getClient() {
 // Reset client when config changes (Popup saves new settings)
 chrome.storage.onChanged.addListener(() => { client = null; });
 
+// ── Offscreen document for Tesseract OCR ─────────────────────────────
+async function ensureOffscreenDocument() {
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT']
+  });
+  if (existing.length === 0) {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'Run Tesseract OCR for burned-in subtitle recognition'
+    });
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'TRANSLATE') {
     getClient()
@@ -31,6 +45,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((translation) => sendResponse({ ok: true, translation }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true; // keep sendResponse channel open for async
+  }
+  if (msg.type === 'OCR') {
+    ensureOffscreenDocument()
+      .then(() => chrome.runtime.sendMessage({ type: 'OCR', dataUrl: msg.dataUrl }))
+      .then((result) => sendResponse(result))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
   }
   if (msg.type === 'BREAKDOWN') {
     getClient()
