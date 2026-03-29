@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+  <title>Vlog 字幕翻译</title>
+</head>
+<body>
+  <div id="config-section">
+    <h3>后端配置</h3>
+    <div id="backend-toggle">
+      <button class="tab active" data-backend="ollama">Ollama（本地）</button>
+      <button class="tab" data-backend="claude">Claude API</button>
+    </div>
+    <div id="ollama-config">
+      <label>地址<input id="ollama-url" type="text" value="http://localhost:11434"></label>
+      <label>模型<input id="ollama-model" type="text" value="qwen2.5:7b"></label>
+    </div>
+    <div id="claude-config" hidden>
+      <label>API Key<input id="claude-key" type="password" placeholder="sk-ant-..."></label>
+    </div>
+    <button id="save-config">保存</button>
+    <span id="save-status"></span>
+  </div>
+  <hr>
+  <div id="vocab-section">
+    <h3>单字本 <span id="vocab-count"></span></h3>
+    <div id="vocab-list"></div>
+    <button id="export-btn">导出 JSON</button>
+    <button id="reset-ocr-btn">重置 OCR 区域</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
