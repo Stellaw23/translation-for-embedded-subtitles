@@ -127,6 +127,14 @@ function showInlineTranslation(subtitleEl, text, lang) {
 // ── Breakdown panel ────────────────────────────────────────────────────
 let breakdownPanel = null;
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function showBreakdownPanel(word, lang, clientX, clientY) {
   closeBreakdownPanel();
 
@@ -134,7 +142,7 @@ function showBreakdownPanel(word, lang, clientX, clientY) {
   panel.className = 'vlog-breakdown-panel';
   panel.innerHTML = `
     <div class="vlog-panel-header">
-      <span class="vlog-panel-word">${word}</span>
+      <span class="vlog-panel-word">${escapeHtml(word)}</span>
       <button class="vlog-panel-close" title="关闭">×</button>
     </div>
     <div class="vlog-panel-body">
@@ -163,9 +171,9 @@ function showBreakdownPanel(word, lang, clientX, clientY) {
     }
     const d = res.data;
     body.innerHTML = `
-      <div class="vlog-panel-row"><span class="vlog-label">读音</span><span>${d.reading}</span></div>
-      <div class="vlog-panel-row"><span class="vlog-label">释义</span><span>${d.meaning}</span></div>
-      <div class="vlog-panel-row"><span class="vlog-label">词性</span><span>${d.pos}</span></div>
+      <div class="vlog-panel-row"><span class="vlog-label">读音</span><span>${escapeHtml(d.reading)}</span></div>
+      <div class="vlog-panel-row"><span class="vlog-label">释义</span><span>${escapeHtml(d.meaning)}</span></div>
+      <div class="vlog-panel-row"><span class="vlog-label">词性</span><span>${escapeHtml(d.pos)}</span></div>
       <div class="vlog-panel-footer">
         <button class="vlog-save-btn">★ 收藏</button>
       </div>
