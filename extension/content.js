@@ -214,3 +214,244 @@ function saveToVocabulary(entry) {
     });
   });
 }
+
+// ── OCR: frame capture + Tesseract ────────────────────────────────────
+
+// region: { x, y, w, h } as 0–1 proportions of video size
+function captureVideoFrame(video, region) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const sx = Math.floor(vw * region.x);
+  const sy = Math.floor(vh * region.y);
+  const sw = Math.floor(vw * region.w);
+  const sh = Math.floor(vh * region.h);
+  if (sw <= 0 || sh <= 0) return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  canvas.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+  return canvas;
+}
+
+let tesseractWorker = null;
+
+async function initTesseract() {
+  if (tesseractWorker) return;
+  // Tesseract.js v4: worker and language data loaded from CDN
+  tesseractWorker = await Tesseract.createWorker('kor+jpn', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/worker.min.js',
+    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4/tesseract-core.wasm.js',
+    logger: () => {}
+  });
+}
+
+async function runOCR(canvas) {
+  await initTesseract();
+  const { data } = await tesseractWorker.recognize(canvas);
+  return data.text.trim().replace(/\s+/g, ' ');
+}
+
+let ocrInterval = null;
+let lastOcrText = '';
+let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
+
+async function startOcrPolling(video) {
+  if (ocrInterval) return;
+  ocrInterval = setInterval(async () => {
+    try {
+      const canvas = captureVideoFrame(video, ocrRegion);
+      if (!canvas) return;
+      const text = await runOCR(canvas);
+      const lang = detectLang(text);
+      if (!lang || !text || text === lastOcrText) return;
+      lastOcrText = text;
+      showOcrOverlay(video, text, lang);
+    } catch (_) {
+      // silent fail (Tesseract initializing, video paused, etc.)
+    }
+  }, 2000);
+}
+
+function stopOcrPolling() {
+  clearInterval(ocrInterval);
+  ocrInterval = null;
+  lastOcrText = '';
+}
+
+// ── OCR region selection ───────────────────────────────────────────────
+
+function ocrRegionKey() {
+  return `ocrRegion:${location.hostname}`;
+}
+
+function loadOcrRegion() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([ocrRegionKey()], (data) => {
+      resolve(data[ocrRegionKey()] || null);
+    });
+  });
+}
+
+function saveOcrRegion(region) {
+  ocrRegion = region;
+  chrome.storage.local.set({ [ocrRegionKey()]: region });
+}
+
+function showRegionSelector(video, onConfirm) {
+  const rect = video.getBoundingClientRect();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'vlog-region-overlay';
+  overlay.style.cssText = `left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;`;
+
+  const hint = document.createElement('div');
+  hint.className = 'vlog-region-hint';
+  hint.textContent = '拖拽选择字幕区域';
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'vlog-region-btn-row';
+
+  const defaultBtn = document.createElement('button');
+  defaultBtn.className = 'vlog-region-btn';
+  defaultBtn.textContent = '默认底部 25%';
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className = 'vlog-region-btn vlog-region-confirm';
+  confirmBtn.textContent = '确认选区';
+  confirmBtn.disabled = true;
+
+  btnRow.append(defaultBtn, confirmBtn);
+
+  const selection = document.createElement('div');
+  selection.className = 'vlog-region-selection';
+
+  overlay.append(hint, btnRow, selection);
+  document.body.appendChild(overlay);
+
+  let dragging = false, startX = 0, startY = 0;
+  let pendingRegion = null;
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay && e.target !== hint) return;
+    dragging = true;
+    startX = e.clientX - rect.left;
+    startY = e.clientY - rect.top;
+    selection.style.display = 'block';
+    e.preventDefault();
+  });
+
+  overlay.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const cx = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const cy = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+    const x = Math.min(startX, cx);
+    const y = Math.min(startY, cy);
+    const w = Math.abs(cx - startX);
+    const h = Math.abs(cy - startY);
+    selection.style.left = x + 'px';
+    selection.style.top = y + 'px';
+    selection.style.width = w + 'px';
+    selection.style.height = h + 'px';
+    if (w > 20 && h > 10) {
+      pendingRegion = {
+        x: x / rect.width,
+        y: y / rect.height,
+        w: w / rect.width,
+        h: h / rect.height
+      };
+      confirmBtn.disabled = false;
+    }
+  });
+
+  overlay.addEventListener('mouseup', () => { dragging = false; });
+
+  defaultBtn.addEventListener('click', () => {
+    overlay.remove();
+    onConfirm({ x: 0, y: 0.75, w: 1, h: 0.25 });
+  });
+
+  confirmBtn.addEventListener('click', () => {
+    if (!pendingRegion) return;
+    overlay.remove();
+    onConfirm(pendingRegion);
+  });
+}
+
+// ── OCR overlay ────────────────────────────────────────────────────────
+
+let ocrOverlay = null;
+
+function showOcrOverlay(video, text, lang) {
+  const rect = video.getBoundingClientRect();
+
+  if (!ocrOverlay) {
+    ocrOverlay = document.createElement('div');
+    ocrOverlay.className = 'vlog-ocr-overlay';
+    document.body.appendChild(ocrOverlay);
+  }
+
+  ocrOverlay.style.cssText = `
+    left: ${rect.left}px;
+    top: ${rect.top + rect.height * 0.88}px;
+    width: ${rect.width}px;
+  `;
+
+  const originalEl = document.createElement('div');
+  originalEl.className = 'vlog-ocr-original';
+  renderClickableTokens(originalEl, text, lang);
+
+  const transEl = document.createElement('div');
+  transEl.className = 'vlog-ocr-translation';
+  transEl.textContent = '翻译中…';
+
+  ocrOverlay.innerHTML = '';
+  ocrOverlay.append(originalEl, transEl);
+
+  chrome.runtime.sendMessage({ type: 'TRANSLATE', text, lang }, (res) => {
+    if (!ocrOverlay) return;
+    transEl.textContent = res && res.ok ? res.translation : '翻译失败';
+  });
+}
+
+function hideOcrOverlay() {
+  if (ocrOverlay) { ocrOverlay.remove(); ocrOverlay = null; }
+}
+
+// ── Main orchestration ─────────────────────────────────────────────────
+
+let currentMode = 'dom';
+
+function switchToOcrMode() {
+  if (currentMode === 'ocr') return;
+  currentMode = 'ocr';
+
+  const video = document.querySelector('video');
+  if (!video) return;
+
+  loadOcrRegion().then((saved) => {
+    if (saved) {
+      ocrRegion = saved;
+      startOcrPolling(video);
+    } else {
+      showRegionSelector(video, (region) => {
+        saveOcrRegion(region);
+        startOcrPolling(video);
+      });
+    }
+  });
+}
+
+function switchToDomMode() {
+  if (currentMode === 'dom') return;
+  currentMode = 'dom';
+  stopOcrPolling();
+  hideOcrOverlay();
+}
+
+// Entry point
+startDomDetection((text, lang, el) => {
+  if (currentMode === 'ocr') switchToDomMode();
+  showInlineTranslation(el, text, lang);
+});
