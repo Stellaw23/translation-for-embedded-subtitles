@@ -39,6 +39,17 @@ const rawPlain = '{"word":"こんにちは","reading":"konnichiwa","meaning":"�
 const parsedPlain = JSON.parse(rawPlain.trim().replace(/^```json\n?/, '').replace(/\n?```$/, ''));
 assert('Breakdown: plain JSON (no fences)', parsedPlain.word === 'こんにちは');
 
+// detectLang tests
+function detectLang_test(text) {
+  if (/[\uAC00-\uD7A3]/.test(text)) return 'ko';
+  if (/[\u3040-\u30FF\u4E00-\u9FAF]/.test(text)) return 'ja';
+  return null;
+}
+assert('detectLang: Korean', detectLang_test('안녕하세요') === 'ko');
+assert('detectLang: Japanese', detectLang_test('こんにちは') === 'ja');
+assert('detectLang: English returns null', detectLang_test('hello world') === null);
+assert('detectLang: mixed with Korean', detectLang_test('hello 안녕') === 'ko');
+assert('detectLang: empty string', detectLang_test('') === null);
 document.getElementById('output').textContent = results.join('\n');
 </script>
 </body>
