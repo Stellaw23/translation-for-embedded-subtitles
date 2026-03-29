@@ -1,0 +1,104 @@
+/* extension/popup.css */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 300px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #333;
+  padding: 12px;
+  background: #faf8f5;
+}
+
+h3 {
+  font-size: 14px;
+  margin-bottom: 8px;
+  color: #444;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#backend-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.tab {
+  flex: 1;
+  padding: 5px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tab.active { background: #b6d7a8; border-color: #9abf94; font-weight: 600; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: #666;
+}
+
+input[type="text"],
+input[type="password"] {
+  padding: 4px 7px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  width: 100%;
+  background: #fff;
+}
+input:focus { outline: none; border-color: #b6d7a8; }
+
+button {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  background: #b6d7a8;
+}
+button:hover { background: #9abf94; }
+
+#save-config { margin-top: 4px; }
+#save-status { margin-left: 8px; color: #4a7c59; font-size: 12px; }
+
+hr { margin: 12px 0; border: none; border-top: 1px solid #e0ddd8; }
+
+#vocab-count { font-weight: normal; color: #999; font-size: 12px; }
+
+#vocab-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.vocab-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid #f0ede8;
+  font-size: 12px;
+}
+.vocab-word { font-weight: 600; min-width: 50px; }
+.vocab-meta { flex: 1; color: #888; margin: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vocab-delete { background: none; color: #c0392b; padding: 0 4px; font-size: 15px; line-height: 1; }
+.vocab-delete:hover { background: none; color: #a93226; }
+
+.vocab-empty { color: #bbb; font-size: 12px; padding: 4px 0; }
+
+#export-btn,
+#reset-ocr-btn {
+  font-size: 12px;
+  margin-right: 6px;
+  background: #e8e4de;
+}
+#export-btn:hover,
+#reset-ocr-btn:hover { background: #d5d0c9; }
