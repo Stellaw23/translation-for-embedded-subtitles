@@ -2,6 +2,44 @@
 <html>
 <head><meta charset="UTF-8"><title>Unit Tests</title></head>
 <body>
-<pre id="output">Tests will appear here</pre>
+<pre id="output"></pre>
+<script src="../extension/llm-client.js"></script>
+<script>
+const results = [];
+function assert(name, condition) {
+  results.push(condition ? `✅ ${name}` : `❌ ${name}`);
+}
+
+// LRUCache: basic get/set
+const cache = new LRUCache(3);
+cache.set('a', 1); cache.set('b', 2); cache.set('c', 3);
+assert('LRUCache: get existing key', cache.get('a') === 1);
+assert('LRUCache: has existing key', cache.has('b'));
+assert('LRUCache: miss returns undefined', cache.get('z') === undefined);
+
+// LRUCache: eviction — access 'a' to make it recent, then add 'd' to evict 'b'
+cache.get('a');
+cache.set('d', 4);
+assert('LRUCache: evicts LRU (b)', !cache.has('b'));
+assert('LRUCache: keeps recently accessed (a)', cache.has('a'));
+assert('LRUCache: keeps newest (d)', cache.has('d'));
+assert('LRUCache: size stays at max', cache.map.size === 3);
+
+// breakdown JSON parse: strips markdown code fences
+const rawWithFences = '```json\n{"word":"테스트","reading":"teseuteu","meaning":"测试","pos":"名词"}\n```';
+const stripped = rawWithFences.trim().replace(/^```json\n?/, '').replace(/\n?```$/, '');
+const parsed = JSON.parse(stripped);
+assert('Breakdown: strips markdown fences', parsed.word === '테스트');
+assert('Breakdown: reading field', parsed.reading === 'teseuteu');
+assert('Breakdown: meaning field', parsed.meaning === '测试');
+assert('Breakdown: pos field', parsed.pos === '名词');
+
+// breakdown JSON parse: no fences (plain JSON)
+const rawPlain = '{"word":"こんにちは","reading":"konnichiwa","meaning":"你好","pos":"感叹词"}';
+const parsedPlain = JSON.parse(rawPlain.trim().replace(/^```json\n?/, '').replace(/\n?```$/, ''));
+assert('Breakdown: plain JSON (no fences)', parsedPlain.word === 'こんにちは');
+
+document.getElementById('output').textContent = results.join('\n');
+</script>
 </body>
 </html>
