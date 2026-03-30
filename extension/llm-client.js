@@ -71,16 +71,24 @@ class LLMClient {
   }
 
   async _ollamaChat(prompt, signal) {
-    const res = await fetch(`${this.config.ollamaUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.config.ollamaModel,
-        messages: [{ role: 'user', content: prompt }],
-        stream: false
-      }),
-      signal
-    });
+    let res;
+    try {
+      res = await fetch(`${this.config.ollamaUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.config.ollamaModel,
+          messages: [{ role: 'user', content: prompt }],
+          stream: false
+        }),
+        signal
+      });
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        throw new Error('Ollama 未运行，请启动 Ollama 或切换后端');
+      }
+      throw e;
+    }
     if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`);
     const data = await res.json();
     return data.message.content.trim();

@@ -4,7 +4,7 @@
 
 **Goal:** 构建一个 Chrome 扩展，自动检测并翻译网页上的韩文/日文字幕（含烧录字幕），支持点词拆解和单字本收藏。
 
-**Architecture:** Content Script 负责字幕检测（MutationObserver 监听 DOM 字幕；Canvas + Tesseract 处理烧录字幕）和 UI 渲染；Background Service Worker 负责 LLM 调用（Ollama/Claude）；Popup 处理配置和单字本。
+**Architecture:** Content Script handles DOM subtitle detection, Canvas frame capture, and renders a Draggable Floating UI; Background Service Worker acts as the message router with concurrency locks; Offscreen Document runs the Tesseract OCR engine safely; Popup handles configs and vocabulary.
 
 **Tech Stack:** Chrome Extension MV3, Vanilla JS（无构建工具）, Tesseract.js v4（CDN worker）, Ollama API, Anthropic Claude API
 
@@ -12,18 +12,20 @@
 
 ## File Map
 
-| 文件 | 职责 |
+| File | Responsibility |
 |------|------|
-| `extension/manifest.json` | 扩展元数据、权限、内容脚本声明 |
-| `extension/background.js` | Service Worker：接收消息，调用 LLMClient，返回结果 |
-| `extension/llm-client.js` | LLMClient 类：Ollama/Claude 后端抽象 + LRU 缓存 |
-| `extension/content.js` | 内容脚本：字幕检测、UI 渲染、OCR 编排 |
-| `extension/content.css` | 内联翻译、OCR 浮层、拆词面板样式 |
-| `extension/popup.html` | Popup 页面结构 |
-| `extension/popup.js` | Popup 逻辑：配置读写 + 单字本 |
-| `extension/popup.css` | Popup 样式 |
-| `extension/libs/tesseract.min.js` | Tesseract.js v4 本地副本 |
-| `tests/test.html` | 纯 JS 逻辑单元测试页面 |
+| `extension/manifest.json` | Metadata, permissions (`offscreen` added), content script declarations |
+| `extension/background.js` | Service Worker: Message routing, LLM client init, Offscreen concurrency lock |
+| `extension/offscreen.html` | Offscreen Document shell |
+| `extension/offscreen.js` | Tesseract.js worker initialization and OCR processing (with crash recovery) |
+| `extension/llm-client.js` | LLMClient Class: Ollama/Claude backend abstraction + LRU Cache |
+| `extension/content.js` | Content script: Subtitle detection, Frame capture, Draggable Floating UI |
+| `extension/content.css` | Draggable UI, Word breakdown panel styles |
+| `extension/popup.html` | Popup layout |
+| `extension/popup.js` | Popup logic: config read/write + vocabulary list |
+| `extension/popup.css` | Popup styles |
+| `extension/libs/tesseract.min.js` | Tesseract.js v4 local copy |
+| `tests/test.html` | Pure JS unit test page |
 
 ---
 
@@ -32,6 +34,8 @@
 **Files:**
 - Create: `extension/manifest.json`
 - Create: `extension/background.js`
+- Create: `extension/offscreen.html`
+- Create: `extension/offscreen.js`
 - Create: `extension/llm-client.js`
 - Create: `extension/content.js`
 - Create: `extension/content.css`
@@ -45,7 +49,9 @@
 
 ```bash
 mkdir -p extension/libs tests
-touch extension/background.js extension/llm-client.js extension/content.js extension/content.css extension/popup.js extension/popup.css
+touch extension/background.js extension/offscreen.html extension/offscreen.js \
+      extension/llm-client.js extension/content.js extension/content.css \
+      extension/popup.js extension/popup.css
 ```
 
 - [ ] **Step 2: 写 manifest.json**
@@ -56,7 +62,7 @@ touch extension/background.js extension/llm-client.js extension/content.js exten
   "name": "Vlog 字幕翻译",
   "version": "1.0.0",
   "description": "韩文/日文 Vlog 字幕实时翻译学习助手",
-  "permissions": ["storage", "scripting", "activeTab"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://www.youtube.com/*",
@@ -69,7 +75,7 @@ touch extension/background.js extension/llm-client.js extension/content.js exten
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["libs/tesseract.min.js", "content.js"],
+      "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
@@ -336,7 +342,7 @@ git commit -m "feat: LLMClient with Ollama/Claude backends, LRU cache, unit test
 
 ---
 
-## Task 3: Background Service Worker — 消息路由
+## Task 3: Background Service Worker — 消息路由 + Offscreen 并发锁
 
 **Files:**
 - Modify: `extension/background.js`
@@ -357,13 +363,15 @@ document.getElementById('output').textContent = results.join('\n');
 
 刷新 tests/test.html，确认新增测试通过。
 
-- [ ] **Step 2: 写 background.js**
+- [ ] **Step 2: 写 background.js（含 Offscreen 并发锁 + OCR 路由）**
 
 ```javascript
 // extension/background.js
 importScripts('llm-client.js');
 
 let client = null;
+let offscreenReady = null;           // Promise resolved when offscreen sends READY
+let creatingOffscreenPromise = null; // Concurrency guard — prevents double-creation
 
 function getClient() {
   return new Promise((resolve) => {
@@ -383,22 +391,79 @@ function getClient() {
   });
 }
 
-// 配置变化时重置 client（Popup 保存后立即生效）
+// Reset client whenever popup saves new config
 chrome.storage.onChanged.addListener(() => { client = null; });
 
+// Ensure exactly one Offscreen Document exists (concurrency-safe)
+async function ensureOffscreenDocument() {
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT']
+  });
+  if (existing.length > 0) return;       // Already alive — nothing to do
+  if (creatingOffscreenPromise) {
+    return creatingOffscreenPromise;     // Another call is already in progress
+  }
+
+  creatingOffscreenPromise = (async () => {
+    try {
+      let readyResolve;
+      offscreenReady = new Promise((r) => { readyResolve = r; });
+      offscreenReady._resolve = readyResolve;
+
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Run Tesseract OCR for burned-in subtitle recognition'
+      });
+
+      // Wait for offscreen.js to signal it has booted (5 s hard timeout)
+      await Promise.race([
+        offscreenReady,
+        new Promise((_, rej) =>
+          setTimeout(() => rej(new Error('Offscreen boot timeout')), 5000)
+        )
+      ]);
+    } finally {
+      offscreenReady = null;
+      creatingOffscreenPromise = null;
+    }
+  })();
+
+  return creatingOffscreenPromise;
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Offscreen boot handshake
+  if (msg.type === 'OFFSCREEN_READY') {
+    if (offscreenReady && offscreenReady._resolve) offscreenReady._resolve();
+    return;
+  }
+
   if (msg.type === 'TRANSLATE') {
     getClient()
       .then((c) => c.translate(msg.text, msg.lang))
       .then((translation) => sendResponse({ ok: true, translation }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
-    return true; // 保持 sendResponse 有效（异步）
+    return true;
   }
+
   if (msg.type === 'BREAKDOWN') {
     getClient()
       .then((c) => c.breakdown(msg.word, msg.lang))
       .then((data) => sendResponse({ ok: true, data }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  // Relay OCR requests: content.js → background → offscreen
+  if (msg.type === 'OCR') {
+    ensureOffscreenDocument()
+      .then(() => chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_OCR_TASK',
+        dataUrl: msg.dataUrl
+      }))
+      .then((result) => sendResponse(result || { ok: false, error: 'No response from offscreen' }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 });
@@ -424,7 +489,7 @@ chrome.runtime.sendMessage(
 
 ```bash
 git add extension/background.js tests/test.html
-git commit -m "feat: background service worker with translate/breakdown message routing"
+git commit -m "feat: background SW with LLM routing + Offscreen concurrency lock + OCR relay"
 ```
 
 ---
@@ -545,19 +610,22 @@ git commit -m "feat: DOM subtitle detection with MutationObserver, throttle, lan
 
 ---
 
-## Task 5: 内联翻译 UI（DOM 模式）
+## Task 5: 悬浮字幕窗 — Draggable Floating Subtitle Window
 
 **Files:**
 - Modify: `extension/content.js`
 - Modify: `extension/content.css`
 
-- [ ] **Step 1: 写词语分词为可点击 token**
+> **设计原则：** 废弃旧的"内联注入"和"OCR 专属浮层"两套割裂 UI。
+> 无论来源是 DOM 抓取还是 OCR 识别，字幕文字都统一喂给同一个可拖拽悬浮窗展示。
+
+- [ ] **Step 1: 写可点击 token 分词器（供悬浮窗和拆词面板共用）**
 
 ```javascript
 // 继续 content.js
 
 function renderClickableTokens(el, text, lang) {
-  // 按语言块分割：韩/日字符为一块，其余为普通文本
+  // Split into language blocks vs plain text
   const pattern = lang === 'ko'
     ? /([\uAC00-\uD7A3]+)/g
     : /([\u3040-\u30FF\u4E00-\u9FAF]+)/g;
@@ -579,91 +647,156 @@ function renderClickableTokens(el, text, lang) {
 }
 ```
 
-- [ ] **Step 2: 写内联翻译注入函数**
+- [ ] **Step 2: 写可拖拽悬浮窗 + updateFloatingSubtitle**
 
 ```javascript
 // 继续 content.js
 
-const TRANSLATION_CLASS = 'vlog-inline-translation';
+let floatingWindow    = null;
+let floatingOriginal  = null;
+let floatingTranslated = null;
 
-function showInlineTranslation(subtitleEl, text, lang) {
-  // 清除旧翻译
-  const old = subtitleEl.parentElement &&
-    subtitleEl.parentElement.querySelector('.' + TRANSLATION_CLASS);
-  if (old) old.remove();
+function createFloatingWindow() {
+  if (floatingWindow) return;
 
-  // 原文分词为可点击 token
-  renderClickableTokens(subtitleEl, text, lang);
+  floatingWindow = document.createElement('div');
+  floatingWindow.className = 'vlog-floating-window';
+  floatingWindow.innerHTML = `
+    <div class="vlog-drag-handle">::</div>
+    <div class="vlog-float-content">
+      <div class="vlog-float-original">等待识别…</div>
+      <div class="vlog-float-translated"></div>
+    </div>
+  `;
+  document.body.appendChild(floatingWindow);
 
-  // 插入翻译占位
-  const div = document.createElement('div');
-  div.className = TRANSLATION_CLASS;
-  div.textContent = '翻译中…';
-  subtitleEl.insertAdjacentElement('afterend', div);
+  floatingOriginal   = floatingWindow.querySelector('.vlog-float-original');
+  floatingTranslated = floatingWindow.querySelector('.vlog-float-translated');
+
+  // ── Drag logic ──────────────────────────────────────────────────────
+  const handle = floatingWindow.querySelector('.vlog-drag-handle');
+  let dragging = false, sx, sy, ix, iy;
+
+  handle.addEventListener('mousedown', (e) => {
+    dragging = true;
+    sx = e.clientX; sy = e.clientY;
+    const r = floatingWindow.getBoundingClientRect();
+    ix = r.left;    iy = r.top;
+    // Switch from CSS bottom/left anchor to absolute left/top for free dragging
+    floatingWindow.style.bottom    = 'auto';
+    floatingWindow.style.transform = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    floatingWindow.style.left = `${ix + (e.clientX - sx)}px`;
+    floatingWindow.style.top  = `${iy + (e.clientY - sy)}px`;
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+}
+
+// Single entry point for BOTH DOM and OCR subtitle results
+function updateFloatingSubtitle(text, lang) {
+  createFloatingWindow();
+  floatingWindow.style.display = 'flex';
+
+  renderClickableTokens(floatingOriginal, text, lang);
+  floatingTranslated.textContent = '翻译中…';
+  floatingTranslated.classList.remove('vlog-error');
 
   chrome.runtime.sendMessage({ type: 'TRANSLATE', text, lang }, (res) => {
-    if (!div.isConnected) return;
     if (chrome.runtime.lastError || !res || !res.ok) {
-      const errMsg = res && res.error && res.error.includes('Ollama')
-        ? 'Ollama 未运行，请检查本地服务'
-        : '翻译失败，点击重试';
-      div.textContent = errMsg;
-      div.classList.add('vlog-error');
-      div.addEventListener('click', () => showInlineTranslation(subtitleEl, text, lang), { once: true });
+      floatingTranslated.textContent = '翻译失败，请检查后端';
+      floatingTranslated.classList.add('vlog-error');
       return;
     }
-    div.textContent = res.translation;
-    div.classList.remove('vlog-error');
+    floatingTranslated.textContent = res.translation;
   });
+}
+
+function hideFloatingWindow() {
+  if (floatingWindow) floatingWindow.style.display = 'none';
 }
 ```
 
-- [ ] **Step 3: 写 content.css 内联翻译样式**
+- [ ] **Step 3: 写悬浮窗 CSS，追加到 content.css**
 
 ```css
 /* extension/content.css */
 
-.vlog-inline-translation {
-  display: inline-block;
+/* ── Draggable floating subtitle window ─────────────────────────────── */
+.vlog-floating-window {
+  position: fixed;
+  bottom: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  padding: 8px 16px 8px 32px;
+  border-radius: 10px;
+  z-index: 2147483647;
+  min-width: 320px;
+  max-width: 700px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  font-family: system-ui, sans-serif;
+  cursor: default;
+}
+
+.vlog-drag-handle {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: grab;
+  color: #666;
+  font-weight: bold;
   font-size: 14px;
-  color: #555555;
-  background: rgba(250, 248, 245, 0.88);
-  padding: 2px 6px;
-  border-radius: 3px;
-  margin-top: 2px;
-  max-width: 100%;
+  user-select: none;
+  letter-spacing: 1px;
+}
+.vlog-drag-handle:active { cursor: grabbing; }
+
+.vlog-float-content  { flex: 1; text-align: center; }
+
+.vlog-float-original {
+  font-size: 17px;
+  font-weight: 500;
+  margin-bottom: 4px;
   line-height: 1.4;
 }
 
-.vlog-inline-translation.vlog-error {
-  color: #c0392b;
-  cursor: pointer;
-  text-decoration: underline dotted;
+.vlog-float-translated {
+  font-size: 14px;
+  color: #b6d7a8;
+  line-height: 1.4;
 }
+.vlog-float-translated.vlog-error { color: #e74c3c; }
 
+/* ── Clickable token (shared: floating window + breakdown panel) ─────── */
 .vlog-token {
   cursor: pointer;
   border-radius: 2px;
   padding: 0 1px;
   transition: background 0.15s;
 }
-.vlog-token:hover {
-  background: rgba(182, 215, 168, 0.5);
-}
+.vlog-token:hover { background: rgba(182, 215, 168, 0.45); }
 ```
 
-- [ ] **Step 4: 重载扩展，在 Bilibili 播放有韩文或日文字幕的视频验证**
+- [ ] **Step 4: 重载扩展，验证悬浮窗**
 
 确认：
-- 字幕文字变化时，下方出现"翻译中…"
-- 片刻后替换为中文翻译
-- 原文中的韩/日文词悬停时出现绿色高亮
+- 扩展加载后，悬浮窗出现在页面底部中央，显示"等待识别…"
+- 拖拽左侧 `::` 手柄可将悬浮窗自由移动到任意位置
+- DOM 字幕触发后（Task 9 编排完成后），原文分词与翻译均在悬浮窗内更新
+- 点击原文词触发拆词面板（Task 6 完成后验证）
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add extension/content.js extension/content.css
-git commit -m "feat: inline translation injection below DOM subtitle elements"
+git commit -m "feat: draggable floating subtitle window (unified DOM + OCR UI)"
 ```
 
 ---
@@ -861,82 +994,117 @@ git commit -m "feat: breakdown panel with reading/meaning/pos and one-click voca
 
 ---
 
-## Task 7: OCR — 帧截取 + Tesseract
+## Task 7: OCR — Offscreen Document + 帧截取
 
 **Files:**
+- Create: `extension/offscreen.html`
+- Create: `extension/offscreen.js`
 - Modify: `extension/content.js`
 
-- [ ] **Step 1: 写帧截取函数**
+> **架构要点：** Tesseract 完全运行在 Offscreen Document 里（无 CSP 限制，不阻塞主线程）。
+> `content.js` 只负责把视频帧编码成 JPEG dataUrl，通过 `OCR` 消息发给 `background.js`，
+> 再由 background 转发给 `offscreen.js`，识别结果原路返回后喂给统一悬浮窗。
+
+- [ ] **Step 1: 写 offscreen.html（Offscreen Document 外壳）**
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="libs/tesseract.min.js"></script>
+  <script src="offscreen.js"></script>
+</head>
+<body></body>
+</html>
+```
+
+- [ ] **Step 2: 写 offscreen.js（Tesseract Worker + 崩溃恢复）**
+
+```javascript
+// extension/offscreen.js
+let tesseractWorker = null;
+let initPromise = null;
+
+async function initTesseract() {
+  if (tesseractWorker) return tesseractWorker;
+  if (initPromise) return initPromise;   // Guard against concurrent init calls
+
+  initPromise = (async () => {
+    const worker = await Tesseract.createWorker('kor+jpn', 1, {
+      workerPath: chrome.runtime.getURL('libs/worker.min.js'),
+      langPath:   'https://tessdata.projectnaptha.com/4.0.0',
+      corePath:   chrome.runtime.getURL('libs/tesseract-core.wasm.js'),
+    });
+    tesseractWorker = worker;
+    return worker;
+  })().finally(() => { initPromise = null; });
+
+  return initPromise;
+}
+
+// Signal background.js that this document has booted successfully
+chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' });
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type !== 'OFFSCREEN_OCR_TASK') return;
+
+  (async () => {
+    try {
+      if (!msg.dataUrl) throw new Error('Missing dataUrl');
+      const worker = await initTesseract();
+      const { data } = await worker.recognize(msg.dataUrl);
+      const text = data.text.trim().replace(/\s+/g, ' ');
+      sendResponse({ ok: true, text });
+    } catch (e) {
+      // Kill zombie worker so the next frame gets a clean one (crash recovery)
+      if (tesseractWorker) {
+        try { await tesseractWorker.terminate(); } catch (_) {}
+        tesseractWorker = null;
+      }
+      sendResponse({ ok: false, error: e.message || String(e) });
+    }
+  })();
+  return true; // keep sendResponse channel alive for async response
+});
+```
+
+- [ ] **Step 3: 更新 content.js — 帧截取为 dataUrl，发消息给 Background**
 
 ```javascript
 // 继续 content.js
 
-// region: { x, y, w, h } 均为 0~1 的比例值（相对视频尺寸）
-function captureVideoFrame(video, region) {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  const sx = Math.floor(vw * region.x);
-  const sy = Math.floor(vh * region.y);
-  const sw = Math.floor(vw * region.w);
-  const sh = Math.floor(vh * region.h);
+// region: { x, y, w, h } — all values 0–1 relative to video dimensions
+function captureVideoFrameDataUrl(video, region) {
+  const vw = video.videoWidth,  vh = video.videoHeight;
+  const sx = Math.floor(vw * region.x), sy = Math.floor(vh * region.y);
+  const sw = Math.floor(vw * region.w), sh = Math.floor(vh * region.h);
   if (sw <= 0 || sh <= 0) return null;
 
   const canvas = document.createElement('canvas');
-  canvas.width = sw;
-  canvas.height = sh;
+  canvas.width = sw; canvas.height = sh;
   canvas.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-  return canvas;
+  return canvas.toDataURL('image/jpeg', 0.85);
 }
-```
-
-- [ ] **Step 2: 写 Tesseract 初始化 + OCR 函数**
-
-```javascript
-// 继续 content.js
-
-let tesseractWorker = null;
-
-async function initTesseract() {
-  if (tesseractWorker) return;
-  // Tesseract.js v4：worker 和语言数据文件从 CDN 加载
-  tesseractWorker = await Tesseract.createWorker('kor+jpn', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/worker.min.js',
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4/tesseract-core.wasm.js',
-    logger: () => {} // 静默初始化日志
-  });
-}
-
-async function runOCR(canvas) {
-  await initTesseract();
-  const { data } = await tesseractWorker.recognize(canvas);
-  return data.text.trim().replace(/\s+/g, ' ');
-}
-```
-
-- [ ] **Step 3: 写 OCR 轮询控制器**
-
-```javascript
-// 继续 content.js
 
 let ocrInterval = null;
-let lastOcrText = '';
-let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // 默认底部 25%
+let lastOcrText  = '';
+let ocrRegion    = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
 
-async function startOcrPolling(video) {
+function startOcrPolling(video) {
   if (ocrInterval) return;
-  ocrInterval = setInterval(async () => {
-    try {
-      const canvas = captureVideoFrame(video, ocrRegion);
-      if (!canvas) return;
-      const text = await runOCR(canvas);
+  ocrInterval = setInterval(() => {
+    const dataUrl = captureVideoFrameDataUrl(video, ocrRegion);
+    if (!dataUrl) return;
+
+    // Send frame to background → offscreen (Tesseract lives there, not here)
+    chrome.runtime.sendMessage({ type: 'OCR', dataUrl }, (res) => {
+      if (!res || !res.ok || !res.text) return;
+      const text = res.text;
       const lang = detectLang(text);
-      if (!lang || !text || text === lastOcrText) return;
+      if (!lang || text === lastOcrText) return;
       lastOcrText = text;
-      showOcrOverlay(video, text, lang);
-    } catch (_) {
-      // 静默失败（Tesseract 初始化中、视频暂停等）
-    }
+      updateFloatingSubtitle(text, lang);  // ← unified floating window (Task 5)
+    });
   }, 2000);
 }
 
@@ -950,8 +1118,8 @@ function stopOcrPolling() {
 - [ ] **Step 4: Commit**
 
 ```bash
-git add extension/content.js
-git commit -m "feat: OCR frame capture with Tesseract.js polling for burned-in subtitles"
+git add extension/offscreen.html extension/offscreen.js extension/content.js
+git commit -m "feat: Tesseract OCR moved to Offscreen Document; content.js sends OCR message via background"
 ```
 
 ---
@@ -1140,58 +1308,16 @@ git commit -m "feat: OCR region selector UI with drag-to-select and per-domain p
 
 ---
 
-## Task 9: OCR 浮层 + 内容脚本编排
+## Task 9: 内容脚本编排 — 统一悬浮窗模式切换
 
 **Files:**
 - Modify: `extension/content.js`
-- Modify: `extension/content.css`
 
-- [ ] **Step 1: 写 OCR 字幕浮层**
+> **设计原则：** 不再有独立的 OCR 浮层或内联注入。两种模式（DOM / OCR）都通过同一个
+> `updateFloatingSubtitle(text, lang)` 函数更新 Task 5 创建的可拖拽悬浮窗。
+> 模式切换时只需停止/启动各自的检测器，并隐藏/显示悬浮窗。
 
-```javascript
-// 继续 content.js
-
-let ocrOverlay = null;
-
-function showOcrOverlay(video, text, lang) {
-  const rect = video.getBoundingClientRect();
-
-  if (!ocrOverlay) {
-    ocrOverlay = document.createElement('div');
-    ocrOverlay.className = 'vlog-ocr-overlay';
-    document.body.appendChild(ocrOverlay);
-  }
-
-  // 定位在视频底部 12% 处
-  ocrOverlay.style.cssText = `
-    left: ${rect.left}px;
-    top: ${rect.top + rect.height * 0.88}px;
-    width: ${rect.width}px;
-  `;
-
-  const originalEl = document.createElement('div');
-  originalEl.className = 'vlog-ocr-original';
-  renderClickableTokens(originalEl, text, lang);
-
-  const transEl = document.createElement('div');
-  transEl.className = 'vlog-ocr-translation';
-  transEl.textContent = '翻译中…';
-
-  ocrOverlay.innerHTML = '';
-  ocrOverlay.append(originalEl, transEl);
-
-  chrome.runtime.sendMessage({ type: 'TRANSLATE', text, lang }, (res) => {
-    if (!ocrOverlay) return;
-    transEl.textContent = res && res.ok ? res.translation : '翻译失败';
-  });
-}
-
-function hideOcrOverlay() {
-  if (ocrOverlay) { ocrOverlay.remove(); ocrOverlay = null; }
-}
-```
-
-- [ ] **Step 2: 写主编排逻辑（content.js 入口，放在文件尾部）**
+- [ ] **Step 1: 写主编排逻辑（content.js 入口，放在文件尾部）**
 
 ```javascript
 // content.js 尾部 — 主流程
@@ -1203,7 +1329,7 @@ function switchToOcrMode() {
   currentMode = 'ocr';
 
   const video = document.querySelector('video');
-  if (!video) return; // 页面没有视频，不启动 OCR
+  if (!video) return; // 页面无视频元素，不启动 OCR
 
   loadOcrRegion().then((saved) => {
     if (saved) {
@@ -1222,66 +1348,41 @@ function switchToDomMode() {
   if (currentMode === 'dom') return;
   currentMode = 'dom';
   stopOcrPolling();
-  hideOcrOverlay();
+  hideFloatingWindow(); // hide until DOM subtitle fires again
 }
 
-// 启动：DOM 字幕检测
-startDomDetection((text, lang, el) => {
+// ── 启动：DOM 字幕检测 ─────────────────────────────────────────────────
+// When a DOM subtitle is found: stop OCR mode, feed text to unified floating window
+startDomDetection((text, lang) => {
   if (currentMode === 'ocr') switchToDomMode();
-  showInlineTranslation(el, text, lang);
+  updateFloatingSubtitle(text, lang);
 });
 ```
 
-- [ ] **Step 3: 写 OCR 浮层样式，追加到 content.css**
+- [ ] **Step 2: Commit**
 
-```css
-.vlog-ocr-overlay {
-  position: fixed;
-  padding: 6px 14px 8px;
-  background: rgba(0, 0, 0, 0.65);
-  border-radius: 6px;
-  font-family: system-ui, -apple-system, sans-serif;
-  line-height: 1.5;
-  z-index: 2147483645;
-  pointer-events: auto;
-}
-
-.vlog-ocr-original {
-  font-size: 16px;
-  color: #fff;
-  margin-bottom: 2px;
-}
-
-.vlog-ocr-translation {
-  font-size: 14px;
-  color: #b6d7a8;
-}
+```bash
+git add extension/content.js
+git commit -m "feat: content script orchestration with unified floating window for DOM + OCR modes"
 ```
 
-- [ ] **Step 4: 端到端手动测试**
+- [ ] **Step 3: 端到端手动测试**
 
 **测试 A（DOM 字幕 — Bilibili/YouTube）：**
 1. 打开含韩/日字幕视频
-2. 字幕下方出现中文翻译 ✓
-3. 点击原文词 → 拆词面板 ✓
-4. ★ 收藏 → Popup 单字本出现 ✓
+2. 悬浮窗出现，原文分词 + 中文翻译在窗内更新 ✓
+3. 拖拽悬浮窗到合适位置 ✓
+4. 点击原文词 → 拆词面板弹出 ✓
+5. ★ 收藏 → Popup 单字本出现该词 ✓
 
-**测试 B（OCR 模式）：**
-1. 打开任意含 `<video>` 但无 DOM 字幕的页面
-2. 等待 5 秒 → 区域选择 UI 出现 ✓
-3. 拖拽选择区域 → 点确认 ✓
-4. OCR 浮层在视频底部出现，翻译随画面内容更新 ✓
+**测试 B（OCR 模式 — 烧录字幕视频）：**
+1. 打开含 `<video>` 但无 DOM 字幕的页面，等待 5 秒
+2. 区域选择 UI 出现 → 拖拽选择字幕区域 → 点确认 ✓
+3. 悬浮窗开始显示 OCR 识别文字 + 翻译（同一个窗口）✓
 
-**测试 C（模式切换）：**
-1. 进入 OCR 模式后，在另一个 tab 打开有 DOM 字幕的视频
-2. DOM 字幕出现 → 自动切回内联翻译模式 ✓
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add extension/content.js extension/content.css
-git commit -m "feat: OCR overlay + mode orchestration (DOM ↔ OCR auto-switch)"
-```
+**测试 C（模式自动切换）：**
+1. 进入 OCR 模式后，切换到有 DOM 字幕的视频
+2. DOM 字幕触发 → OCR 轮询自动停止，悬浮窗内容切换为 DOM 字幕 ✓
 
 ---
 
@@ -1580,11 +1681,11 @@ git commit -m "feat: vocabulary list with delete, JSON export, OCR region reset"
 | Content Script + Background 架构 | Task 1, 3 |
 | LLMClient Ollama/Claude 抽象 | Task 2 |
 | DOM 字幕 MutationObserver | Task 4 |
-| 翻译自动触发 + 内联注入 | Task 5 |
+| Draggable Floating UI（DOM + OCR 统一悬浮窗）| Task 5, 9 |
 | 点词拆解面板 | Task 6 |
 | Tesseract OCR 截帧 | Task 7 |
 | OCR 区域选择 + per-domain 存储 | Task 8 |
-| OCR 浮层 + DOM↔OCR 模式切换 | Task 9 |
+| 内容脚本编排 + DOM↔OCR 模式切换 | Task 9 |
 | Popup 后端配置 | Task 10 |
 | 单字本列表 + 导出 + OCR 区域重置 | Task 11 |
 | 配色 #b6d7a8 / #faf8f5 | Task 6, 8, 10 |

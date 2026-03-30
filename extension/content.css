@@ -1,175 +1,243 @@
 /* extension/content.css */
 
-.vlog-inline-translation {
-  display: inline-block;
-  font-size: 14px;
-  color: #555555;
-  background: rgba(250, 248, 245, 0.88);
-  padding: 2px 6px;
-  border-radius: 3px;
-  margin-top: 2px;
-  max-width: 100%;
-  line-height: 1.4;
+/* ── Draggable floating subtitle window ─────────────────────────────────── */
+
+.vlog-floating-window {
+    position: fixed;
+    bottom: 10%;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0;
+    background: rgba(10, 10, 10, 0.82);
+    color: #fff;
+    padding: 10px 20px 10px 34px;
+    border-radius: 12px;
+    z-index: 2147483647;
+    min-width: 320px;
+    max-width: 680px;
+    box-shadow:
+        0 6px 28px rgba(0, 0, 0, 0.45),
+        0 1px 4px rgba(0, 0, 0, 0.3);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    user-select: none;
+    transition: opacity 0.15s ease;
 }
 
-.vlog-inline-translation.vlog-error {
-  color: #c0392b;
-  cursor: pointer;
-  text-decoration: underline dotted;
+.vlog-drag-handle {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: grab;
+    color: rgba(255, 255, 255, 0.35);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    line-height: 1;
+    padding: 4px 2px;
+    transition: color 0.15s;
 }
+.vlog-drag-handle:hover {
+    color: rgba(255, 255, 255, 0.7);
+}
+.vlog-drag-handle:active {
+    cursor: grabbing;
+    color: #fff;
+}
+
+.vlog-float-content {
+    flex: 1;
+    text-align: center;
+    min-width: 0; /* allow text to truncate inside flex */
+}
+
+.vlog-float-original {
+    font-size: 17px;
+    font-weight: 500;
+    line-height: 1.5;
+    margin-bottom: 3px;
+    color: #fff;
+    word-break: break-word;
+}
+
+.vlog-float-translated {
+    font-size: 14px;
+    line-height: 1.5;
+    color: #b6d7a8;
+    word-break: break-word;
+}
+.vlog-float-translated.vlog-error {
+    color: #e74c3c;
+    font-style: italic;
+}
+
+/* ── Clickable token (shared by floating window + breakdown panel) ────────── */
 
 .vlog-token {
-  cursor: pointer;
-  border-radius: 2px;
-  padding: 0 1px;
-  transition: background 0.15s;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0 2px;
+    transition: background 0.12s;
 }
 .vlog-token:hover {
-  background: rgba(182, 215, 168, 0.5);
+    background: rgba(182, 215, 168, 0.45);
 }
 
+/* ── Breakdown panel ─────────────────────────────────────────────────────── */
+
 .vlog-breakdown-panel {
-  width: 220px;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 13px;
+    position: fixed;
+    width: 220px;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    font-size: 13px;
+    z-index: 2147483647;
 }
 
 .vlog-panel-header {
-  background: #b6d7a8;
-  padding: 6px 10px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+    background: #b6d7a8;
+    padding: 6px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .vlog-panel-word {
-  font-weight: 600;
-  font-size: 15px;
+    font-weight: 600;
+    font-size: 15px;
+    color: #1a1a1a;
 }
 
 .vlog-panel-close {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 18px;
-  color: #444;
-  line-height: 1;
-  padding: 0 2px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    color: #444;
+    line-height: 1;
+    padding: 0 2px;
 }
-.vlog-panel-close:hover { color: #000; }
+.vlog-panel-close:hover {
+    color: #000;
+}
 
 .vlog-panel-body {
-  background: #faf8f5;
-  padding: 8px 10px;
+    background: #faf8f5;
+    padding: 8px 10px;
 }
 
 .vlog-panel-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 4px;
-  line-height: 1.5;
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    line-height: 1.5;
 }
 
 .vlog-label {
-  color: #999;
-  min-width: 28px;
-  font-size: 11px;
-  padding-top: 2px;
+    color: #999;
+    min-width: 28px;
+    font-size: 11px;
+    padding-top: 2px;
+    flex-shrink: 0;
 }
 
 .vlog-panel-footer {
-  margin-top: 8px;
-  text-align: right;
+    margin-top: 8px;
+    text-align: right;
 }
 
 .vlog-save-btn {
-  background: #b6d7a8;
-  border: none;
-  border-radius: 4px;
-  padding: 3px 10px;
-  cursor: pointer;
-  font-size: 12px;
+    background: #b6d7a8;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
 }
-.vlog-save-btn:hover { background: #9abf94; }
-.vlog-save-btn:disabled { background: #ddd; cursor: default; }
+.vlog-save-btn:hover {
+    background: #9abf94;
+}
+.vlog-save-btn:disabled {
+    background: #ddd;
+    cursor: default;
+}
 
 .vlog-panel-loading,
 .vlog-panel-error {
-  color: #aaa;
-  font-size: 12px;
-  padding: 4px 0;
+    color: #aaa;
+    font-size: 12px;
+    padding: 4px 0;
 }
 
+/* ── OCR region selector ─────────────────────────────────────────────────── */
+
 .vlog-region-overlay {
-  position: fixed;
-  background: rgba(0, 0, 0, 0.45);
-  cursor: crosshair;
-  z-index: 2147483646;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding-top: 16px;
-  gap: 8px;
+    position: fixed;
+    background: rgba(0, 0, 0, 0.45);
+    cursor: crosshair;
+    z-index: 2147483646;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 16px;
+    gap: 8px;
 }
 
 .vlog-region-hint {
-  color: #fff;
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
-  pointer-events: none;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    font-size: 14px;
+    pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 
 .vlog-region-btn-row {
-  display: flex;
-  gap: 8px;
-  z-index: 1;
+    display: flex;
+    gap: 8px;
+    z-index: 1;
 }
 
 .vlog-region-btn {
-  background: rgba(250, 248, 245, 0.92);
-  border: none;
-  border-radius: 4px;
-  padding: 5px 14px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: system-ui, sans-serif;
+    background: rgba(250, 248, 245, 0.92);
+    border: none;
+    border-radius: 4px;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: system-ui, sans-serif;
 }
-.vlog-region-btn:hover { background: rgba(255,255,255,0.98); }
+.vlog-region-btn:hover {
+    background: rgba(255, 255, 255, 0.98);
+}
 
-.vlog-region-confirm { background: #b6d7a8; }
-.vlog-region-confirm:hover { background: #9abf94; }
-.vlog-region-confirm:disabled { opacity: 0.5; cursor: default; }
+.vlog-region-confirm {
+    background: #b6d7a8;
+}
+.vlog-region-confirm:hover {
+    background: #9abf94;
+}
+.vlog-region-confirm:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
 
 .vlog-region-selection {
-  position: absolute;
-  border: 2px solid #b6d7a8;
-  background: rgba(182, 215, 168, 0.18);
-  display: none;
-  pointer-events: none;
-}
-
-.vlog-ocr-overlay {
-  position: fixed;
-  padding: 6px 14px 8px;
-  background: rgba(0, 0, 0, 0.65);
-  border-radius: 6px;
-  font-family: system-ui, -apple-system, sans-serif;
-  line-height: 1.5;
-  z-index: 2147483645;
-  pointer-events: auto;
-}
-
-.vlog-ocr-original {
-  font-size: 16px;
-  color: #fff;
-  margin-bottom: 2px;
-}
-
-.vlog-ocr-translation {
-  font-size: 14px;
-  color: #b6d7a8;
+    position: absolute;
+    border: 2px solid #b6d7a8;
+    background: rgba(182, 215, 168, 0.18);
+    display: none;
+    pointer-events: none;
 }

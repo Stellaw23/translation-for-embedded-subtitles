@@ -3,9 +3,9 @@
   "name": "Vlog 字幕翻译",
   "version": "1.0.0",
   "description": "韩文/日文 Vlog 字幕实时翻译学习助手",
-  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen", "tabs"],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' blob: 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "host_permissions": [
     "https://www.bilibili.com/*",

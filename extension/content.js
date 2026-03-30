@@ -1,16 +1,16 @@
 // extension/content.js
 
-// ── Language detection ────────────────────────────────────────────────
+// ── Language detection ─────────────────────────────────────────────────
 function detectLang(text) {
-  if (/[\uAC00-\uD7A3]/.test(text)) return 'ko';
-  if (/[\u3040-\u30FF\u4E00-\u9FAF]/.test(text)) return 'ja';
+  if (/[\uAC00-\uD7A3]/.test(text)) return "ko";
+  if (/[\u3040-\u30FF\u4E00-\u9FAF]/.test(text)) return "ja";
   return null;
 }
 
-// ── DOM subtitle selectors ────────────────────────────────────────────
+// ── DOM subtitle selectors ─────────────────────────────────────────────
 const SUBTITLE_SELECTORS = [
-  '.bilibili-player-video-subtitle span',
-  '.ytp-caption-segment',
+  ".bilibili-player-video-subtitle span",
+  ".ytp-caption-segment",
 ];
 
 function findSubtitleElement() {
@@ -19,7 +19,7 @@ function findSubtitleElement() {
     if (el && el.textContent.trim()) return el;
   }
   // Generic fallback: find short elements containing Korean/Japanese
-  const candidates = document.querySelectorAll('span, p');
+  const candidates = document.querySelectorAll("span, p");
   for (const el of candidates) {
     const text = el.textContent.trim();
     if (text.length > 1 && text.length < 200 && detectLang(text)) return el;
@@ -27,19 +27,22 @@ function findSubtitleElement() {
   return null;
 }
 
-// ── Throttle ──────────────────────────────────────────────────────────
+// ── Throttle ───────────────────────────────────────────────────────────
 function throttle(fn, ms) {
   let last = 0;
   return (...args) => {
     const now = Date.now();
-    if (now - last >= ms) { last = now; fn(...args); }
+    if (now - last >= ms) {
+      last = now;
+      fn(...args);
+    }
   };
 }
 
-// ── MutationObserver subtitle detector ───────────────────────────────
-let lastSubtitleText = '';
+// ── MutationObserver subtitle detector ────────────────────────────────
+let lastSubtitleText = "";
 let domIdleTimer = null;
-let onSubtitleFound = null; // callback(text, lang, element)
+let onSubtitleFound = null; // callback(text, lang)
 
 const handleMutation = throttle(() => {
   const el = findSubtitleElement();
@@ -49,7 +52,7 @@ const handleMutation = throttle(() => {
   if (!lang || text === lastSubtitleText) return;
   lastSubtitleText = text;
   resetDomIdleTimer();
-  if (onSubtitleFound) onSubtitleFound(text, lang, el);
+  if (onSubtitleFound) onSubtitleFound(text, lang);
 }, 1000);
 
 const subtitleObserver = new MutationObserver(handleMutation);
@@ -59,7 +62,7 @@ function startDomDetection(callback) {
   subtitleObserver.observe(document.body, {
     childList: true,
     subtree: true,
-    characterData: true
+    characterData: true,
   });
   resetDomIdleTimer();
 }
@@ -69,22 +72,19 @@ function resetDomIdleTimer() {
   domIdleTimer = setTimeout(switchToOcrMode, 5000);
 }
 
-// ── Inline translation UI (DOM subtitle mode) ─────────────────────────
-const TRANSLATION_CLASS = 'vlog-inline-translation';
-
+// ── Clickable token renderer (floating window + breakdown panel) ───────
 function renderClickableTokens(el, text, lang) {
-  const pattern = lang === 'ko'
-    ? /([\uAC00-\uD7A3]+)/g
-    : /([\u3040-\u30FF\u4E00-\u9FAF]+)/g;
+  const pattern =
+    lang === "ko" ? /([\uAC00-\uD7A3]+)/g : /([\u3040-\u30FF\u4E00-\u9FAF]+)/g;
   const parts = text.split(pattern);
 
-  el.innerHTML = '';
+  el.innerHTML = "";
   parts.forEach((part) => {
-    const span = document.createElement('span');
+    const span = document.createElement("span");
     span.textContent = part;
     if (detectLang(part)) {
-      span.className = 'vlog-token';
-      span.addEventListener('click', (e) => {
+      span.className = "vlog-token";
+      span.addEventListener("click", (e) => {
         e.stopPropagation();
         showBreakdownPanel(part, lang, e.clientX, e.clientY);
       });
@@ -93,35 +93,80 @@ function renderClickableTokens(el, text, lang) {
   });
 }
 
-function showInlineTranslation(subtitleEl, text, lang) {
-  // Remove old translation if present
-  const old = subtitleEl.parentElement &&
-    subtitleEl.parentElement.querySelector('.' + TRANSLATION_CLASS);
-  if (old) old.remove();
+// ── Draggable floating subtitle window ────────────────────────────────
+let floatingWindow = null;
+let floatingOriginal = null;
+let floatingTranslated = null;
 
-  // Render original text as clickable tokens
-  renderClickableTokens(subtitleEl, text, lang);
+function createFloatingWindow() {
+  if (floatingWindow) return;
 
-  // Insert loading placeholder
-  const div = document.createElement('div');
-  div.className = TRANSLATION_CLASS;
-  div.textContent = '翻译中…';
-  subtitleEl.insertAdjacentElement('afterend', div);
+  floatingWindow = document.createElement("div");
+  floatingWindow.className = "vlog-floating-window";
+  floatingWindow.innerHTML = `
+    <div class="vlog-drag-handle">::</div>
+    <div class="vlog-float-content">
+      <div class="vlog-float-original">等待识别…</div>
+      <div class="vlog-float-translated"></div>
+    </div>
+  `;
+  document.body.appendChild(floatingWindow);
 
-  chrome.runtime.sendMessage({ type: 'TRANSLATE', text, lang }, (res) => {
-    if (!div.isConnected) return;
+  floatingOriginal = floatingWindow.querySelector(".vlog-float-original");
+  floatingTranslated = floatingWindow.querySelector(".vlog-float-translated");
+
+  // ── Drag logic ───────────────────────────────────────────────────────
+  const handle = floatingWindow.querySelector(".vlog-drag-handle");
+  let dragging = false;
+  let startX, startY, initLeft, initTop;
+
+  handle.addEventListener("mousedown", (e) => {
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = floatingWindow.getBoundingClientRect();
+    initLeft = rect.left;
+    initTop = rect.top;
+    // Detach from CSS bottom/transform anchor so absolute left/top takes over
+    floatingWindow.style.bottom = "auto";
+    floatingWindow.style.transform = "none";
+    floatingWindow.style.left = `${initLeft}px`;
+    floatingWindow.style.top = `${initTop}px`;
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    floatingWindow.style.left = `${initLeft + (e.clientX - startX)}px`;
+    floatingWindow.style.top = `${initTop + (e.clientY - startY)}px`;
+  });
+
+  document.addEventListener("mouseup", () => {
+    dragging = false;
+  });
+}
+
+// Single entry point for BOTH DOM subtitles and OCR results
+function updateFloatingSubtitle(text, lang) {
+  createFloatingWindow();
+  floatingWindow.style.display = "flex";
+
+  renderClickableTokens(floatingOriginal, text, lang);
+  floatingTranslated.textContent = "翻译中…";
+  floatingTranslated.classList.remove("vlog-error");
+
+  chrome.runtime.sendMessage({ type: "TRANSLATE", text, lang }, (res) => {
     if (chrome.runtime.lastError || !res || !res.ok) {
-      const errMsg = res && res.error && res.error.includes('Ollama')
-        ? 'Ollama 未运行，请检查本地服务'
-        : '翻译失败，点击重试';
-      div.textContent = errMsg;
-      div.classList.add('vlog-error');
-      div.addEventListener('click', () => showInlineTranslation(subtitleEl, text, lang), { once: true });
+      floatingTranslated.textContent = (res && res.error) || "翻译失败，请检查后端";
+      floatingTranslated.classList.add("vlog-error");
       return;
     }
-    div.textContent = res.translation;
-    div.classList.remove('vlog-error');
+    floatingTranslated.textContent = res.translation;
   });
+}
+
+function hideFloatingWindow() {
+  if (floatingWindow) floatingWindow.style.display = "none";
 }
 
 // ── Breakdown panel ────────────────────────────────────────────────────
@@ -129,17 +174,17 @@ let breakdownPanel = null;
 
 function escapeHtml(str) {
   return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function showBreakdownPanel(word, lang, clientX, clientY) {
   closeBreakdownPanel();
 
-  const panel = document.createElement('div');
-  panel.className = 'vlog-breakdown-panel';
+  const panel = document.createElement("div");
+  panel.className = "vlog-breakdown-panel";
   panel.innerHTML = `
     <div class="vlog-panel-header">
       <span class="vlog-panel-word">${escapeHtml(word)}</span>
@@ -150,23 +195,26 @@ function showBreakdownPanel(word, lang, clientX, clientY) {
     </div>
   `;
 
-  const panelW = 220, panelH = 130;
+  const panelW = 220,
+    panelH = 130;
   panel.style.cssText = `
     position: fixed;
     left: ${Math.min(clientX, window.innerWidth - panelW - 8)}px;
-    top: ${Math.min(clientY + 8, window.innerHeight - panelH - 8)}px;
+    top:  ${Math.min(clientY + 8, window.innerHeight - panelH - 8)}px;
     z-index: 2147483647;
   `;
   document.body.appendChild(panel);
   breakdownPanel = panel;
 
-  panel.querySelector('.vlog-panel-close').addEventListener('click', closeBreakdownPanel);
+  panel
+    .querySelector(".vlog-panel-close")
+    .addEventListener("click", closeBreakdownPanel);
 
-  chrome.runtime.sendMessage({ type: 'BREAKDOWN', word, lang }, (res) => {
+  chrome.runtime.sendMessage({ type: "BREAKDOWN", word, lang }, (res) => {
     if (!panel.isConnected) return;
-    const body = panel.querySelector('.vlog-panel-body');
+    const body = panel.querySelector(".vlog-panel-body");
     if (chrome.runtime.lastError || !res || !res.ok) {
-      body.innerHTML = `<div class="vlog-panel-error">分析失败</div>`;
+      body.innerHTML = `<div class="vlog-panel-error">${escapeHtml((res && res.error) || '分析失败')}</div>`;
       return;
     }
     const d = res.data;
@@ -178,13 +226,13 @@ function showBreakdownPanel(word, lang, clientX, clientY) {
         <button class="vlog-save-btn">★ 收藏</button>
       </div>
     `;
-    panel.querySelector('.vlog-save-btn').addEventListener('click', () => {
+    panel.querySelector(".vlog-save-btn").addEventListener("click", () => {
       saveToVocabulary({ ...d, lang });
     });
   });
 
   setTimeout(() => {
-    document.addEventListener('click', outsideClickHandler);
+    document.addEventListener("click", outsideClickHandler);
   }, 0);
 }
 
@@ -195,30 +243,41 @@ function outsideClickHandler(e) {
 }
 
 function closeBreakdownPanel() {
-  if (breakdownPanel) { breakdownPanel.remove(); breakdownPanel = null; }
-  document.removeEventListener('click', outsideClickHandler);
+  if (breakdownPanel) {
+    breakdownPanel.remove();
+    breakdownPanel = null;
+  }
+  document.removeEventListener("click", outsideClickHandler);
 }
 
 function saveToVocabulary(entry) {
-  chrome.storage.local.get(['vocabulary'], (data) => {
+  chrome.storage.local.get(["vocabulary"], (data) => {
     const vocab = data.vocabulary || [];
     if (vocab.some((v) => v.word === entry.word && v.lang === entry.lang)) {
-      const btn = breakdownPanel && breakdownPanel.querySelector('.vlog-save-btn');
-      if (btn) { btn.textContent = '✓ 已收藏'; btn.disabled = true; }
+      const btn =
+        breakdownPanel && breakdownPanel.querySelector(".vlog-save-btn");
+      if (btn) {
+        btn.textContent = "✓ 已收藏";
+        btn.disabled = true;
+      }
       return;
     }
     vocab.push({ ...entry, savedAt: Date.now() });
     chrome.storage.local.set({ vocabulary: vocab }, () => {
-      const btn = breakdownPanel && breakdownPanel.querySelector('.vlog-save-btn');
-      if (btn) { btn.textContent = '✓ 已收藏'; btn.disabled = true; }
+      const btn =
+        breakdownPanel && breakdownPanel.querySelector(".vlog-save-btn");
+      if (btn) {
+        btn.textContent = "✓ 已收藏";
+        btn.disabled = true;
+      }
     });
   });
 }
 
-// ── OCR: frame capture + Tesseract ────────────────────────────────────
+// ── OCR: frame capture → dataUrl → background → offscreen ─────────────
 
-// region: { x, y, w, h } as 0–1 proportions of video size
-function captureVideoFrame(video, region) {
+// region: { x, y, w, h } as 0–1 proportions of video dimensions
+function captureVideoFrameDataUrl(video, region) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const sx = Math.floor(vw * region.x);
@@ -227,66 +286,78 @@ function captureVideoFrame(video, region) {
   const sh = Math.floor(vh * region.h);
   if (sw <= 0 || sh <= 0) return null;
 
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = sw;
   canvas.height = sh;
-  canvas.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-  return canvas;
-}
+  canvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
 
-// OCR runs in offscreen document (extension context, no page CSP restrictions).
-// Content script just captures the frame and sends the dataUrl to background.
-async function runOCR(canvas) {
-  let dataUrl;
   try {
-    dataUrl = canvas.toDataURL('image/png');
+    return canvas.toDataURL("image/png");
   } catch (e) {
-    throw new Error('Canvas tainted (cross-origin video): ' + e.message);
+    // Canvas tainted by cross-origin video — nothing we can do here
+    console.warn("[Vlog OCR] Canvas tainted (cross-origin video):", e.message);
+    return null;
   }
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'OCR', dataUrl }, (res) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!res || !res.ok) {
-        reject(new Error(res?.error || 'OCR failed'));
-        return;
-      }
-      console.log('[Vlog OCR] recognized:', JSON.stringify(res.text));
-      resolve(res.text);
-    });
-  });
 }
 
 let ocrInterval = null;
-let lastOcrText = '';
+let ocrInFlight = false; // prevent overlapping OCR requests
+let lastOcrText = "";
 let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
 
-async function startOcrPolling(video) {
+function startOcrPolling(video) {
   if (ocrInterval) return;
-  ocrInterval = setInterval(async () => {
-    try {
-      const canvas = captureVideoFrame(video, ocrRegion);
-      if (!canvas) return;
-      const text = await runOCR(canvas);
+
+  ocrInterval = setInterval(() => {
+    if (ocrInFlight) return; // serialize polling requests
+    const dataUrl = captureVideoFrameDataUrl(video, ocrRegion);
+    if (!dataUrl) return;
+
+    ocrInFlight = true;
+
+    // Tesseract lives in offscreen.js — content.js just ferries the frame
+    chrome.runtime.sendMessage({ type: "OCR", dataUrl }, (res) => {
+      ocrInFlight = false;
+
+      if (chrome.runtime.lastError) {
+        if (
+          chrome.runtime.lastError.message.includes(
+            "Extension context invalidated",
+          )
+        ) {
+          stopOcrPolling(); // extension was reloaded mid-session
+        }
+        return;
+      }
+      if (!res || !res.ok || !res.text) return;
+
+      const text = res.text;
+
+      // Skip walls of text — real subtitles are short phrases
+      if (text.length > 60) return;
+
+      // Skip garbled output — at least 40% of chars must be Korean/Japanese
+      const cjkCount = (text.match(/[\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FAF]/g) || []).length;
+      if (cjkCount / text.length < 0.4) return;
+
       const lang = detectLang(text);
-      if (!lang || !text || text === lastOcrText) return;
+      if (!lang || text === lastOcrText) return;
       lastOcrText = text;
-      showOcrOverlay(video, text, lang);
-    } catch (e) {
-      console.error('[Vlog OCR] error:', e);
-    }
+
+      // Same entry point as DOM subtitles — unified floating window
+      updateFloatingSubtitle(text, lang);
+    });
   }, 2000);
 }
 
 function stopOcrPolling() {
   clearInterval(ocrInterval);
   ocrInterval = null;
-  lastOcrText = '';
+  ocrInFlight = false;
+  lastOcrText = "";
 }
 
-// ── OCR region selection ───────────────────────────────────────────────
+// ── OCR region persistence (per hostname) ──────────────────────────────
 
 function ocrRegionKey() {
   return `ocrRegion:${location.hostname}`;
@@ -305,50 +376,59 @@ function saveOcrRegion(region) {
   chrome.storage.local.set({ [ocrRegionKey()]: region });
 }
 
+// ── OCR region selector UI ─────────────────────────────────────────────
+
 function showRegionSelector(video, onConfirm) {
   const rect = video.getBoundingClientRect();
 
-  const overlay = document.createElement('div');
-  overlay.className = 'vlog-region-overlay';
-  overlay.style.cssText = `left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;`;
+  const overlay = document.createElement("div");
+  overlay.className = "vlog-region-overlay";
+  overlay.style.cssText = `
+    left: ${rect.left}px;
+    top: ${rect.top}px;
+    width: ${rect.width}px;
+    height: ${rect.height}px;
+  `;
 
-  const hint = document.createElement('div');
-  hint.className = 'vlog-region-hint';
-  hint.textContent = '拖拽选择字幕区域';
+  const hint = document.createElement("div");
+  hint.className = "vlog-region-hint";
+  hint.textContent = "拖拽选择字幕区域";
 
-  const btnRow = document.createElement('div');
-  btnRow.className = 'vlog-region-btn-row';
+  const btnRow = document.createElement("div");
+  btnRow.className = "vlog-region-btn-row";
 
-  const defaultBtn = document.createElement('button');
-  defaultBtn.className = 'vlog-region-btn';
-  defaultBtn.textContent = '默认底部 25%';
+  const defaultBtn = document.createElement("button");
+  defaultBtn.className = "vlog-region-btn";
+  defaultBtn.textContent = "默认底部 25%";
 
-  const confirmBtn = document.createElement('button');
-  confirmBtn.className = 'vlog-region-btn vlog-region-confirm';
-  confirmBtn.textContent = '确认选区';
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "vlog-region-btn vlog-region-confirm";
+  confirmBtn.textContent = "确认选区";
   confirmBtn.disabled = true;
 
   btnRow.append(defaultBtn, confirmBtn);
 
-  const selection = document.createElement('div');
-  selection.className = 'vlog-region-selection';
+  const selection = document.createElement("div");
+  selection.className = "vlog-region-selection";
 
   overlay.append(hint, btnRow, selection);
   document.body.appendChild(overlay);
 
-  let dragging = false, startX = 0, startY = 0;
+  let dragging = false;
+  let startX = 0,
+    startY = 0;
   let pendingRegion = null;
 
-  overlay.addEventListener('mousedown', (e) => {
+  overlay.addEventListener("mousedown", (e) => {
     if (e.target !== overlay && e.target !== hint) return;
     dragging = true;
     startX = e.clientX - rect.left;
     startY = e.clientY - rect.top;
-    selection.style.display = 'block';
+    selection.style.display = "block";
     e.preventDefault();
   });
 
-  overlay.addEventListener('mousemove', (e) => {
+  overlay.addEventListener("mousemove", (e) => {
     if (!dragging) return;
     const cx = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const cy = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
@@ -356,85 +436,47 @@ function showRegionSelector(video, onConfirm) {
     const y = Math.min(startY, cy);
     const w = Math.abs(cx - startX);
     const h = Math.abs(cy - startY);
-    selection.style.left = x + 'px';
-    selection.style.top = y + 'px';
-    selection.style.width = w + 'px';
-    selection.style.height = h + 'px';
+    selection.style.left = x + "px";
+    selection.style.top = y + "px";
+    selection.style.width = w + "px";
+    selection.style.height = h + "px";
     if (w > 20 && h > 10) {
       pendingRegion = {
         x: x / rect.width,
         y: y / rect.height,
         w: w / rect.width,
-        h: h / rect.height
+        h: h / rect.height,
       };
       confirmBtn.disabled = false;
     }
   });
 
-  overlay.addEventListener('mouseup', () => { dragging = false; });
+  overlay.addEventListener("mouseup", () => {
+    dragging = false;
+  });
 
-  defaultBtn.addEventListener('click', () => {
+  defaultBtn.addEventListener("click", () => {
     overlay.remove();
     onConfirm({ x: 0, y: 0.75, w: 1, h: 0.25 });
   });
 
-  confirmBtn.addEventListener('click', () => {
+  confirmBtn.addEventListener("click", () => {
     if (!pendingRegion) return;
     overlay.remove();
     onConfirm(pendingRegion);
   });
 }
 
-// ── OCR overlay ────────────────────────────────────────────────────────
-
-let ocrOverlay = null;
-
-function showOcrOverlay(video, text, lang) {
-  const rect = video.getBoundingClientRect();
-
-  if (!ocrOverlay) {
-    ocrOverlay = document.createElement('div');
-    ocrOverlay.className = 'vlog-ocr-overlay';
-    document.body.appendChild(ocrOverlay);
-  }
-
-  ocrOverlay.style.cssText = `
-    left: ${rect.left}px;
-    top: ${rect.top + rect.height * 0.88}px;
-    width: ${rect.width}px;
-  `;
-
-  const originalEl = document.createElement('div');
-  originalEl.className = 'vlog-ocr-original';
-  renderClickableTokens(originalEl, text, lang);
-
-  const transEl = document.createElement('div');
-  transEl.className = 'vlog-ocr-translation';
-  transEl.textContent = '翻译中…';
-
-  ocrOverlay.innerHTML = '';
-  ocrOverlay.append(originalEl, transEl);
-
-  chrome.runtime.sendMessage({ type: 'TRANSLATE', text, lang }, (res) => {
-    if (!ocrOverlay) return;
-    transEl.textContent = res && res.ok ? res.translation : '翻译失败';
-  });
-}
-
-function hideOcrOverlay() {
-  if (ocrOverlay) { ocrOverlay.remove(); ocrOverlay = null; }
-}
-
 // ── Main orchestration ─────────────────────────────────────────────────
 
-let currentMode = 'dom';
+let currentMode = "dom";
 
 function switchToOcrMode() {
-  if (currentMode === 'ocr') return;
-  currentMode = 'ocr';
+  if (currentMode === "ocr") return;
+  currentMode = "ocr";
 
-  const video = document.querySelector('video');
-  if (!video) return;
+  const video = document.querySelector("video");
+  if (!video) return; // no video on page, skip OCR
 
   loadOcrRegion().then((saved) => {
     if (saved) {
@@ -450,14 +492,44 @@ function switchToOcrMode() {
 }
 
 function switchToDomMode() {
-  if (currentMode === 'dom') return;
-  currentMode = 'dom';
+  if (currentMode === "dom") return;
+  currentMode = "dom";
   stopOcrPolling();
-  hideOcrOverlay();
+  hideFloatingWindow(); // hide until next DOM subtitle fires
 }
 
-// Entry point
-startDomDetection((text, lang, el) => {
-  if (currentMode === 'ocr') switchToDomMode();
-  showInlineTranslation(el, text, lang);
+// ── Enable / disable ───────────────────────────────────────────────────
+
+let enabled = false;
+
+function enable() {
+  if (enabled) return;
+  enabled = true;
+  // Both DOM subtitles and OCR results feed into the same floating window
+  startDomDetection((text, lang) => {
+    if (currentMode === "ocr") switchToDomMode();
+    updateFloatingSubtitle(text, lang);
+  });
+}
+
+function disable() {
+  if (!enabled) return;
+  enabled = false;
+  subtitleObserver.disconnect();
+  clearTimeout(domIdleTimer);
+  stopOcrPolling();
+  hideFloatingWindow();
+  currentMode = "dom";
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === "ENABLE") {
+    enable();
+    sendResponse({ enabled: true });
+  } else if (msg.type === "DISABLE") {
+    disable();
+    sendResponse({ enabled: false });
+  } else if (msg.type === "GET_STATUS") {
+    sendResponse({ enabled });
+  }
 });

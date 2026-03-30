@@ -1,6 +1,32 @@
 // extension/popup.js
 
 document.addEventListener('DOMContentLoaded', () => {
+  // ── Enable / disable ────────────────────────────────────────────────
+  const enableToggle = document.getElementById('enable-toggle');
+
+  function queryCurrentTab(cb) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) cb(tabs[0].id);
+    });
+  }
+
+  // Get current status
+  queryCurrentTab((tabId) => {
+    chrome.tabs.sendMessage(tabId, { type: 'GET_STATUS' }, (res) => {
+      if (chrome.runtime.lastError) return; // content script not injected
+      enableToggle.checked = res && res.enabled;
+    });
+  });
+
+  enableToggle.addEventListener('change', () => {
+    const type = enableToggle.checked ? 'ENABLE' : 'DISABLE';
+    queryCurrentTab((tabId) => {
+      chrome.tabs.sendMessage(tabId, { type }, (res) => {
+        if (chrome.runtime.lastError) { enableToggle.checked = false; }
+      });
+    });
+  });
+
   // ── Backend config ─────────────────────────────────────────────────
   const tabs = document.querySelectorAll('.tab');
   const ollamaSection = document.getElementById('ollama-config');
