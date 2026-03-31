@@ -370,8 +370,11 @@ function storageGet(keys) {
 }
 
 function storageSet(payload) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set(payload, () => resolve());
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(payload, () => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve();
+    });
   });
 }
 
@@ -461,7 +464,9 @@ let ocrDatasetWriteQueue = Promise.resolve();
 function queueOcrSample(sample) {
   if (!ocrDataCollectionEnabled) return;
 
-  ocrDatasetWriteQueue = ocrDatasetWriteQueue
+  const prev = ocrDatasetWriteQueue;
+  ocrDatasetWriteQueue = Promise.resolve();
+  prev
     .catch(() => {})
     .then(async () => {
       const compressedDataUrl = await compressOcrSampleDataUrl(sample.dataUrl);
@@ -511,11 +516,19 @@ let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
 const localOcrBridgeUrl = "http://127.0.0.1:3000/ocr";
 
 async function requestOcrFromLocalBridge(dataUrl) {
-  const response = await fetch(localOcrBridgeUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ image: dataUrl }),
-  });
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), 8000);
+  let response;
+  try {
+    response = await fetch(localOcrBridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ image: dataUrl }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timerId);
+  }
   if (!response.ok) {
     throw new Error(`Local OCR bridge HTTP ${response.status}`);
   }

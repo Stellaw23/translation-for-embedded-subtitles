@@ -5,11 +5,7 @@
   "description": "韩文/日文 Vlog 字幕实时翻译学习助手",
   "permissions": ["storage", "unlimitedStorage", "scripting", "activeTab", "offscreen", "tabs"],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
-    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self';"
-  },
-  "sandbox": {
-    "pages": ["sandbox.html"]
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "host_permissions": [
     "https://www.bilibili.com/*",
