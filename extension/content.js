@@ -508,6 +508,111 @@ let ocrInterval = null;
 let ocrInFlight = false; // prevent overlapping OCR requests
 let lastOcrText = "";
 let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
+const localOcrBridgeUrl = "http://127.0.0.1:3000/ocr";
+
+async function requestOcrFromLocalBridge(dataUrl) {
+  const response = await fetch(localOcrBridgeUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ image: dataUrl }),
+  });
+  if (!response.ok) {
+    throw new Error(`Local OCR bridge HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (payload && payload.error) {
+    throw new Error(payload.error);
+  }
+  const text = normalizeOcrText(payload && (payload.text || payload.texts));
+  let confidence = Number.isFinite(payload && payload.confidence)
+    ? Number(payload.confidence)
+    : null;
+  if (confidence !== null) {
+    confidence = confidence <= 1 ? confidence * 100 : confidence;
+    confidence = Math.max(0, Math.min(100, confidence));
+  }
+  return { ok: true, text, confidence };
+}
+
+function requestOcrFromExtension(dataUrl) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "OCR", dataUrl }, (res) => {
+      if (chrome.runtime.lastError) {
+        const message = chrome.runtime.lastError.message || "";
+        if (message.includes("Extension context invalidated")) {
+          stopOcrPolling();
+        }
+        resolve({ ok: false, error: message });
+        return;
+      }
+      resolve(res || { ok: false });
+    });
+  });
+}
+
+function handleOcrResult(video, dataUrl, res) {
+  if (!res || !res.ok) return;
+
+  const text = normalizeOcrText(res.text);
+  const confidence = Number.isFinite(res.confidence)
+    ? Number(res.confidence)
+    : null;
+  const currentTimeSec = Number.isFinite(video.currentTime)
+    ? Number(video.currentTime.toFixed(3))
+    : 0;
+  const timeBucket = getTimeBucket(currentTimeSec);
+  const videoKey = getVideoKey();
+  const matchKey = buildMatchKey(videoKey, timeBucket, text);
+  const lang = detectLang(text);
+  let cjkRatio = null;
+  let dropReason = null;
+
+  if (!text) {
+    dropReason = "empty_text";
+  } else if (text.length > 60) {
+    dropReason = "too_long";
+  } else {
+    const cjkCount = (text.match(/[\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FAF]/g) || []).length;
+    cjkRatio = cjkCount / text.length;
+    if (cjkRatio < 0.4) {
+      dropReason = "low_cjk_ratio";
+    } else if (!lang) {
+      dropReason = "lang_unknown";
+    } else if (text === lastOcrText) {
+      dropReason = "duplicate";
+    }
+  }
+
+  const correctedText = resolveCorrectedText(videoKey, timeBucket, text);
+
+  queueOcrSample({
+    capturedAt: Date.now(),
+    videoKey,
+    currentTimeSec,
+    timeBucket,
+    matchKey,
+    hostname: location.hostname,
+    pageUrl: `${location.origin}${location.pathname}`,
+    text,
+    correctedText,
+    lang,
+    confidence,
+    accepted: dropReason === null,
+    dropReason,
+    cjkRatio: cjkRatio === null ? null : Number(cjkRatio.toFixed(4)),
+    fontColor: ocrFontColor,
+    region: { ...ocrRegion },
+    frameSize: { width: video.videoWidth, height: video.videoHeight },
+    dataUrl,
+  });
+
+  if (dropReason) return;
+  lastOcrText = text;
+  if (correctedText === ocrNoTextToken) return;
+  const outputText = correctedText || text;
+  const outputLang = detectLang(outputText) || lang;
+  updateFloatingSubtitle(outputText, outputLang, { source: "ocr", confidence });
+}
 
 function startOcrPolling(video) {
   if (ocrInterval) return;
@@ -519,84 +624,19 @@ function startOcrPolling(video) {
 
     ocrInFlight = true;
 
-    // Tesseract lives in offscreen.js — content.js just ferries the frame
-    chrome.runtime.sendMessage({ type: "OCR", dataUrl }, (res) => {
-      ocrInFlight = false;
-
-      if (chrome.runtime.lastError) {
-        if (
-          chrome.runtime.lastError.message.includes(
-            "Extension context invalidated",
-          )
-        ) {
-          stopOcrPolling(); // extension was reloaded mid-session
+    (async () => {
+      try {
+        let res;
+        try {
+          res = await requestOcrFromLocalBridge(dataUrl);
+        } catch (_e) {
+          res = await requestOcrFromExtension(dataUrl);
         }
-        return;
+        handleOcrResult(video, dataUrl, res);
+      } finally {
+        ocrInFlight = false;
       }
-      if (!res || !res.ok) return;
-
-      const text = normalizeOcrText(res.text);
-      const confidence = Number.isFinite(res.confidence)
-        ? Number(res.confidence)
-        : null;
-      const currentTimeSec = Number.isFinite(video.currentTime)
-        ? Number(video.currentTime.toFixed(3))
-        : 0;
-      const timeBucket = getTimeBucket(currentTimeSec);
-      const videoKey = getVideoKey();
-      const matchKey = buildMatchKey(videoKey, timeBucket, text);
-      const lang = detectLang(text);
-      let cjkRatio = null;
-      let dropReason = null;
-
-      if (!text) {
-        dropReason = "empty_text";
-      } else if (text.length > 60) {
-        dropReason = "too_long";
-      } else {
-        const cjkCount = (text.match(/[\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FAF]/g) || []).length;
-        cjkRatio = cjkCount / text.length;
-        if (cjkRatio < 0.4) {
-          dropReason = "low_cjk_ratio";
-        } else if (!lang) {
-          dropReason = "lang_unknown";
-        } else if (text === lastOcrText) {
-          dropReason = "duplicate";
-        }
-      }
-
-      const correctedText = resolveCorrectedText(videoKey, timeBucket, text);
-
-      queueOcrSample({
-        capturedAt: Date.now(),
-        videoKey,
-        currentTimeSec,
-        timeBucket,
-        matchKey,
-        hostname: location.hostname,
-        pageUrl: `${location.origin}${location.pathname}`,
-        text,
-        correctedText,
-        lang,
-        confidence,
-        accepted: dropReason === null,
-        dropReason,
-        cjkRatio: cjkRatio === null ? null : Number(cjkRatio.toFixed(4)),
-        fontColor: ocrFontColor,
-        region: { ...ocrRegion },
-        frameSize: { width: video.videoWidth, height: video.videoHeight },
-        dataUrl,
-      });
-
-      if (dropReason) return;
-      lastOcrText = text;
-      if (correctedText === ocrNoTextToken) return;
-      const outputText = correctedText || text;
-      const outputLang = detectLang(outputText) || lang;
-
-      // Same entry point as DOM subtitles — unified floating window
-      updateFloatingSubtitle(outputText, outputLang, { source: "ocr", confidence });
-    });
+    })();
   }, 2000);
 }
 
