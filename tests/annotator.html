@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCR 标注工具</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f7f7f9;
+      color: #222;
+    }
+    .app {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 14px;
+    }
+    .panel {
+      background: #fff;
+      border: 1px solid #e6e6e6;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .left {
+      position: sticky;
+      top: 10px;
+      height: fit-content;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin: 8px 0;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 1px solid #d0d0d0;
+      border-radius: 8px;
+      background: #f1f1f1;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .status {
+      font-size: 12px;
+      color: #666;
+      min-height: 18px;
+    }
+    .stat {
+      font-size: 12px;
+      color: #444;
+      background: #f7f7f7;
+      border: 1px solid #ececec;
+      border-radius: 8px;
+      padding: 8px;
+      line-height: 1.7;
+      margin-top: 8px;
+    }
+    .sample {
+      margin-bottom: 12px;
+      border: 1px solid #ececec;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+    .sample.active {
+      border-color: #8db6ff;
+      box-shadow: 0 0 0 2px rgba(141, 182, 255, 0.2);
+    }
+    .meta {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    .img-wrap {
+      background: #111;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .img-wrap img {
+      width: 100%;
+      max-height: 240px;
+      object-fit: contain;
+      display: block;
+      margin: 0 auto;
+    }
+    .label {
+      font-size: 11px;
+      color: #777;
+      margin: 4px 0;
+    }
+    .raw {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+      background: #fafafa;
+      border: 1px solid #ececec;
+      border-radius: 6px;
+      padding: 7px;
+      min-height: 40px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 64px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 13px;
+      resize: vertical;
+      font-family: inherit;
+      line-height: 1.5;
+    }
+    .sample-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .help {
+      font-size: 12px;
+      color: #555;
+      line-height: 1.6;
+    }
+    .filter-box {
+      margin: 8px 0;
+      padding: 8px;
+      border: 1px solid #ececec;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    .filter-title {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    .filter-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #444;
+      margin: 4px 0;
+    }
+    .filter-line input[type="range"] {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel left">
+      <h1>OCR 标注工具</h1>
+      <div class="row">
+        <input id="zipInput" type="file" accept=".zip">
+      </div>
+      <div class="row">
+        <button id="prevBtn" disabled>上一条</button>
+        <button id="nextBtn" disabled>下一条</button>
+        <button id="saveBtn" disabled>保存并下一条</button>
+        <button id="skipBtn" disabled>跳过</button>
+      </div>
+      <div class="row">
+        <button id="exportBtn" disabled>导出 labels.jsonl</button>
+      </div>
+      <div class="filter-box">
+        <div class="filter-title">筛选视图</div>
+        <label class="filter-line">
+          <input id="filterAccepted" type="checkbox">
+          仅 accepted=false
+        </label>
+        <label class="filter-line">
+          <input id="filterLowConf" type="checkbox" checked>
+          仅低置信度
+        </label>
+        <label class="filter-line">
+          <input id="filterUntouched" type="checkbox">
+          仅未处理
+        </label>
+        <div class="filter-line">
+          置信度阈值
+          <input id="confRange" type="range" min="1" max="99" step="1" value="70">
+          <span id="confValue">70</span>
+        </div>
+      </div>
+      <div id="loadStatus" class="status"></div>
+      <div id="exportStatus" class="status"></div>
+      <div id="statBox" class="stat">尚未载入数据</div>
+      <div class="help">
+        Enter：保存并下一条<br>
+        Space：跳过（输入框未聚焦时）<br>
+        N：标记无字并下一条<br>
+        ← / →：上一条 / 下一条
+      </div>
+    </div>
+    <div class="panel">
+      <div id="samples"></div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script>
+    const zipInput = document.getElementById('zipInput');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const skipBtn = document.getElementById('skipBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const loadStatus = document.getElementById('loadStatus');
+    const exportStatus = document.getElementById('exportStatus');
+    const statBox = document.getElementById('statBox');
+    const samplesEl = document.getElementById('samples');
+    const filterAccepted = document.getElementById('filterAccepted');
+    const filterLowConf = document.getElementById('filterLowConf');
+    const filterUntouched = document.getElementById('filterUntouched');
+    const confRange = document.getElementById('confRange');
+    const confValue = document.getElementById('confValue');
+
+    const state = {
+      allSamples: [],
+      activeIndices: [],
+      viewPos: 0,
+      byId: {},
+      objectUrls: [],
+      loaded: false
+    };
+
+    function normalizeText(v) {
+      return String(v || '').trim();
+    }
+
+    function buildMatchKey(videoKey, timeBucket, text) {
+      return `${String(videoKey).trim()}|${Number(timeBucket)}|${normalizeText(text)}`;
+    }
+
+    function parseJsonl(text) {
+      return String(text || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch (_e) {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    }
+
+    function resolveMatchKey(item) {
+      const k = normalizeText(item.matchKey);
+      if (k) return k;
+      const videoKey = normalizeText(item.videoKey);
+      const raw = normalizeText(item.text || item.rawText || item.ocrText);
+      let bucket = Number(item.timeBucket);
+      if (!Number.isFinite(bucket)) {
+        const t = Number(item.currentTimeSec ?? item.currentTime ?? item.timestampSec);
+        if (Number.isFinite(t) && t >= 0) bucket = Math.floor(t / 1);
+      }
+      if (videoKey && Number.isFinite(bucket) && raw) {
+        return buildMatchKey(videoKey, bucket, raw);
+      }
+      return '';
+    }
+
+    function releaseObjectUrls() {
+      state.objectUrls.forEach((u) => URL.revokeObjectURL(u));
+      state.objectUrls = [];
+    }
+
+    function getCurrentSample() {
+      if (!state.loaded || state.activeIndices.length === 0) return null;
+      const idx = state.activeIndices[state.viewPos];
+      return state.allSamples[idx] || null;
+    }
+
+    function refreshControlState() {
+      const hasData = state.loaded && state.allSamples.length > 0;
+      const hasView = hasData && state.activeIndices.length > 0;
+      prevBtn.disabled = !hasView;
+      nextBtn.disabled = !hasView;
+      saveBtn.disabled = !hasView;
+      skipBtn.disabled = !hasView;
+      exportBtn.disabled = !hasData;
+    }
+
+    function updateStats() {
+      if (!state.loaded || state.allSamples.length === 0) {
+        statBox.textContent = '尚未载入数据';
+        return;
+      }
+      const total = state.allSamples.length;
+      const visible = state.activeIndices.length;
+      const corrected = state.allSamples.filter((s) => s.correctedText && s.correctedText !== s.rawText).length;
+      const skipped = state.allSamples.filter((s) => s.skipped).length;
+      const untouched = state.allSamples.filter((s) => !s.touched).length;
+      const lowConfTotal = state.allSamples.filter((s) => Number.isFinite(s.confidence) && s.confidence < Number(confRange.value)).length;
+      const current = visible > 0 ? `${state.viewPos + 1} / ${visible}` : '- / 0';
+      statBox.innerHTML = `
+总样本：${total}<br>
+当前筛选：${visible}<br>
+低置信(<${Number(confRange.value)})：${lowConfTotal}<br>
+未处理：${untouched}<br>
+已修改：${corrected}<br>
+已跳过：${skipped}<br>
+当前位置：${current}
+      `.trim();
+    }
+
+    function sampleMatchesFilter(s) {
+      const needAccepted = filterAccepted.checked;
+      const needLowConf = filterLowConf.checked;
+      const needUntouched = filterUntouched.checked;
+      const threshold = Number(confRange.value);
+      if (!needAccepted && !needLowConf && !needUntouched) return true;
+      const acceptedBad = needAccepted && s.accepted === false;
+      const lowConf = needLowConf && Number.isFinite(s.confidence) && s.confidence < threshold;
+      const untouched = needUntouched && !s.touched;
+      return acceptedBad || lowConf || untouched;
+    }
+
+    function applyFilters() {
+      const current = getCurrentSample();
+      const currentId = current ? current.id : null;
+      state.activeIndices = [];
+      for (let i = 0; i < state.allSamples.length; i += 1) {
+        if (sampleMatchesFilter(state.allSamples[i])) {
+          state.activeIndices.push(i);
+        }
+      }
+      if (state.activeIndices.length === 0) {
+        state.viewPos = 0;
+      } else if (currentId) {
+        const p = state.activeIndices.findIndex((idx) => state.allSamples[idx].id === currentId);
+        state.viewPos = p >= 0 ? p : Math.min(state.viewPos, state.activeIndices.length - 1);
+      } else {
+        state.viewPos = Math.min(state.viewPos, state.activeIndices.length - 1);
+      }
+      confValue.textContent = String(Number(confRange.value));
+      refreshControlState();
+      renderSamples();
+    }
+
+    function renderSamples() {
+      samplesEl.innerHTML = '';
+      if (!state.loaded || state.activeIndices.length === 0) {
+        updateStats();
+        if (state.loaded) {
+          const empty = document.createElement('div');
+          empty.className = 'status';
+          empty.textContent = '当前筛选无样本';
+          samplesEl.appendChild(empty);
+        }
+        return;
+      }
+
+      const start = Math.max(0, state.viewPos - 2);
+      const end = Math.min(state.activeIndices.length, state.viewPos + 3);
+      for (let p = start; p < end; p += 1) {
+        const i = state.activeIndices[p];
+        const s = state.allSamples[i];
+        const wrap = document.createElement('div');
+        wrap.className = `sample${p === state.viewPos ? ' active' : ''}`;
+        wrap.dataset.pos = String(p);
+        wrap.innerHTML = `
+          <div class="meta">#${i + 1} · ${s.videoKey || '-'} · t=${Number.isFinite(s.currentTimeSec) ? s.currentTimeSec : '-'} · bucket=${Number.isFinite(s.timeBucket) ? s.timeBucket : '-'}</div>
+          <div class="meta">conf=${Number.isFinite(s.confidence) ? s.confidence : '-'} · accepted=${s.accepted === false ? 'false' : 'true'} · ${s.matchKey || '无 matchKey（不会导出）'}</div>
+          <div class="img-wrap"><img src="${s.imageUrl || ''}" alt=""></div>
+          <div class="label">原 OCR</div>
+          <div class="raw">${(s.rawText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+          <div class="label">修正文本</div>
+          <textarea data-id="${s.id}">${s.correctedText || ''}</textarea>
+          <div class="sample-actions">
+            <button data-act="save" data-id="${s.id}">保存</button>
+            <button data-act="skip" data-id="${s.id}">跳过</button>
+            <button data-act="no-text" data-id="${s.id}">无字</button>
+            <button data-act="goto" data-id="${s.id}">定位</button>
+          </div>
+        `;
+        samplesEl.appendChild(wrap);
+      }
+
+      const active = samplesEl.querySelector('.sample.active textarea');
+      if (active) {
+        active.focus();
+        active.select();
+      }
+      updateStats();
+    }
+
+    function jumpTo(pos) {
+      if (!state.loaded || state.activeIndices.length === 0) return;
+      if (pos < 0) pos = 0;
+      if (pos > state.activeIndices.length - 1) pos = state.activeIndices.length - 1;
+      state.viewPos = pos;
+      renderSamples();
+    }
+
+    function saveCurrentAndNext() {
+      const s = getCurrentSample();
+      if (!s) return;
+      const ta = samplesEl.querySelector('.sample.active textarea');
+      if (ta) {
+        s.correctedText = normalizeText(ta.value);
+      }
+      s.skipped = false;
+      s.noText = false;
+      s.touched = true;
+      if (state.viewPos < state.activeIndices.length - 1) {
+        state.viewPos += 1;
+      }
+      renderSamples();
+    }
+
+    function skipCurrentAndNext() {
+      const s = getCurrentSample();
+      if (!s) return;
+      s.skipped = true;
+      s.noText = false;
+      s.touched = true;
+      if (state.viewPos < state.activeIndices.length - 1) {
+        state.viewPos += 1;
+      }
+      renderSamples();
+    }
+
+    function markNoTextAndNext() {
+      const s = getCurrentSample();
+      if (!s) return;
+      s.skipped = false;
+      s.noText = true;
+      s.touched = true;
+      if (state.viewPos < state.activeIndices.length - 1) {
+        state.viewPos += 1;
+      }
+      renderSamples();
+    }
+
+    function toLabelsJsonl() {
+      const rows = [];
+      state.allSamples.forEach((s) => {
+        if (!s.matchKey) return;
+        if (s.skipped) return;
+        if (!s.touched) return;
+        if (s.noText) {
+          rows.push({
+            matchKey: s.matchKey,
+            noText: true,
+            action: "no_text",
+            videoKey: s.videoKey,
+            timeBucket: s.timeBucket,
+            text: s.rawText
+          });
+          return;
+        }
+        const correctedText = normalizeText(s.correctedText);
+        if (!correctedText || correctedText === normalizeText(s.rawText)) return;
+        rows.push({
+          matchKey: s.matchKey,
+          correctedText,
+          videoKey: s.videoKey,
+          timeBucket: s.timeBucket,
+          text: s.rawText
+        });
+      });
+      return rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : '');
+    }
+
+    function downloadText(text, filename) {
+      const blob = new Blob([text], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function loadZip(file) {
+      if (!window.JSZip) {
+        throw new Error('JSZip 加载失败，请联网后刷新页面');
+      }
+      releaseObjectUrls();
+      state.allSamples = [];
+      state.activeIndices = [];
+      state.viewPos = 0;
+      state.byId = {};
+      state.loaded = false;
+      refreshControlState();
+
+      const zip = await JSZip.loadAsync(file);
+      const metaEntry = zip.file('metadata.jsonl');
+      if (!metaEntry) {
+        throw new Error('ZIP 中缺少 metadata.jsonl');
+      }
+      const metaText = await metaEntry.async('string');
+      const list = parseJsonl(metaText);
+      if (!list.length) {
+        throw new Error('metadata.jsonl 没有可用记录');
+      }
+
+      const loaded = [];
+      for (let i = 0; i < list.length; i += 1) {
+        const item = list[i];
+        const imagePath = normalizeText(item.imagePath);
+        if (!imagePath) continue;
+        const imageEntry = zip.file(imagePath);
+        if (!imageEntry) continue;
+        const blob = await imageEntry.async('blob');
+        const imageUrl = URL.createObjectURL(blob);
+        state.objectUrls.push(imageUrl);
+        const rawText = normalizeText(item.text || item.rawText || item.ocrText);
+        const sample = {
+          id: item.id || `${Date.now()}-${i}`,
+          videoKey: normalizeText(item.videoKey),
+          currentTimeSec: Number(item.currentTimeSec),
+          timeBucket: Number(item.timeBucket),
+          matchKey: resolveMatchKey(item),
+          rawText,
+          correctedText: normalizeText(item.correctedText || rawText),
+          imageUrl,
+          accepted: item.accepted === false ? false : true,
+          confidence: Number(item.confidence),
+          skipped: false,
+          noText: false,
+          touched: false
+        };
+        loaded.push(sample);
+        state.byId[sample.id] = sample;
+      }
+      if (!loaded.length) {
+        throw new Error('ZIP 中图片或元数据无法匹配');
+      }
+      state.allSamples = loaded;
+      state.loaded = true;
+      applyFilters();
+    }
+
+    zipInput.addEventListener('change', async () => {
+      const file = zipInput.files && zipInput.files[0];
+      if (!file) return;
+      loadStatus.textContent = '正在读取 ZIP...';
+      exportStatus.textContent = '';
+      try {
+        await loadZip(file);
+        loadStatus.textContent = `载入成功：${state.allSamples.length} 条`;
+      } catch (e) {
+        loadStatus.textContent = `载入失败：${e.message || String(e)}`;
+        refreshControlState();
+        renderSamples();
+      }
+    });
+
+    filterAccepted.addEventListener('change', applyFilters);
+    filterLowConf.addEventListener('change', applyFilters);
+    filterUntouched.addEventListener('change', applyFilters);
+    confRange.addEventListener('input', applyFilters);
+
+    prevBtn.addEventListener('click', () => jumpTo(state.viewPos - 1));
+    nextBtn.addEventListener('click', () => jumpTo(state.viewPos + 1));
+    saveBtn.addEventListener('click', saveCurrentAndNext);
+    skipBtn.addEventListener('click', skipCurrentAndNext);
+
+    exportBtn.addEventListener('click', () => {
+      if (!state.loaded) return;
+      const text = toLabelsJsonl();
+      const n = text ? text.trim().split('\n').length : 0;
+      if (n === 0) {
+        exportStatus.textContent = '没有可导出的修正记录';
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      downloadText(text, `labels-${stamp}.jsonl`);
+      exportStatus.textContent = `导出完成：${n} 条`;
+    });
+
+    samplesEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const s = state.byId[id];
+      if (!s) return;
+      const activeIdx = state.activeIndices.findIndex((idx) => state.allSamples[idx].id === id);
+      if (activeIdx >= 0) state.viewPos = activeIdx;
+      const act = btn.dataset.act;
+      if (act === 'goto') {
+        renderSamples();
+        return;
+      }
+      if (act === 'no-text') {
+        markNoTextAndNext();
+        return;
+      }
+      const textarea = samplesEl.querySelector(`textarea[data-id="${CSS.escape(id)}"]`);
+      if (textarea) {
+        s.correctedText = normalizeText(textarea.value);
+      }
+      s.touched = true;
+      if (act === 'save') {
+        s.skipped = false;
+        s.noText = false;
+      } else if (act === 'skip') {
+        s.skipped = true;
+        s.noText = false;
+      }
+      renderSamples();
+    });
+
+    samplesEl.addEventListener('input', (e) => {
+      const ta = e.target.closest('textarea');
+      if (!ta) return;
+      const s = state.byId[ta.dataset.id];
+      if (!s) return;
+      s.correctedText = ta.value;
+      s.skipped = false;
+      s.noText = false;
+      s.touched = true;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (!state.loaded) return;
+      const activeTag = document.activeElement && document.activeElement.tagName;
+      if (e.key === 'Enter' && activeTag === 'TEXTAREA') {
+        e.preventDefault();
+        saveCurrentAndNext();
+        return;
+      }
+      if (e.key === ' ' && activeTag !== 'TEXTAREA') {
+        e.preventDefault();
+        skipCurrentAndNext();
+        return;
+      }
+      if ((e.key === 'n' || e.key === 'N') && activeTag !== 'TEXTAREA') {
+        e.preventDefault();
+        markNoTextAndNext();
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        jumpTo(state.viewPos - 1);
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        jumpTo(state.viewPos + 1);
+      }
+    });
+  </script>
+</body>
+</html>

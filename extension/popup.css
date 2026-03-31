@@ -150,3 +150,56 @@ hr { margin: 12px 0; border: none; border-top: 1px solid #e0ddd8; }
 }
 #export-btn:hover,
 #reset-ocr-btn:hover { background: #d5d0c9; }
+
+#ocr-data-count { font-weight: normal; color: #999; font-size: 12px; }
+
+.inline-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.inline-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+#ocr-data-hint {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+  min-height: 18px;
+}
+
+.ocr-data-actions {
+  display: flex;
+  gap: 6px;
+}
+
+#export-ocr-jsonl-btn,
+#export-ocr-zip-btn {
+  flex: 1;
+  font-size: 12px;
+  background: #e8e4de;
+}
+
+#import-ocr-labels-btn {
+  width: 100%;
+  font-size: 12px;
+  background: #e8e4de;
+}
+
+#export-ocr-jsonl-btn:hover,
+#export-ocr-zip-btn:hover,
+#import-ocr-labels-btn:hover {
+  background: #d5d0c9;
+}
+
+#ocr-label-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #666;
+  min-height: 16px;
+}

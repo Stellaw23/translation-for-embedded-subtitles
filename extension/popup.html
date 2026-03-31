@@ -37,6 +37,24 @@
     <button id="export-btn">导出 JSON</button>
     <button id="reset-ocr-btn">重置 OCR 区域</button>
   </div>
+  <hr>
+  <div id="ocr-data-section">
+    <h3>OCR 数据闭环 <span id="ocr-data-count"></span></h3>
+    <label class="inline-toggle">
+      <span>采集样本</span>
+      <input type="checkbox" id="ocr-data-toggle">
+    </label>
+    <div id="ocr-data-hint"></div>
+    <div class="ocr-data-actions">
+      <button id="export-ocr-jsonl-btn">导出 JSONL</button>
+      <button id="export-ocr-zip-btn">导出 ZIP</button>
+    </div>
+    <div class="ocr-data-actions">
+      <button id="import-ocr-labels-btn">导入 labels.jsonl</button>
+    </div>
+    <input id="import-ocr-labels-file" type="file" accept=".jsonl,.ndjson,text/plain,application/x-ndjson" hidden>
+    <div id="ocr-label-status"></div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

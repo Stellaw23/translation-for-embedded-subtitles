@@ -12,7 +12,7 @@
     gap: 0;
     background: rgba(10, 10, 10, 0.82);
     color: #fff;
-    padding: 10px 20px 10px 34px;
+    padding: 10px 110px 10px 34px;
     border-radius: 12px;
     z-index: 2147483647;
     min-width: 320px;
@@ -50,6 +50,40 @@
 .vlog-drag-handle:active {
     cursor: grabbing;
     color: #fff;
+}
+
+.vlog-ocr-color {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.vlog-ocr-status {
+    position: absolute;
+    right: 86px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: #d4f2d0;
+    letter-spacing: 0.2px;
+}
+
+.vlog-floating-window.vlog-ocr-low-confidence {
+    box-shadow:
+        0 6px 28px rgba(220, 53, 69, 0.45),
+        0 1px 4px rgba(220, 53, 69, 0.35);
+}
+
+.vlog-floating-window.vlog-ocr-low-confidence .vlog-ocr-status {
+    color: #ffd7dd;
 }
 
 .vlog-float-content {
