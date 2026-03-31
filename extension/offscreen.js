@@ -73,7 +73,10 @@ async function recognizeDataUrl(dataUrl) {
   const worker = await initTesseract();
   const { data } = await worker.recognize(blob, {}, { lang: OCR_LANG });
   const text = ((data && data.text) || "").trim().replace(/\s+/g, " ");
-  return text;
+  const confidence = Number.isFinite(data && data.confidence)
+    ? Math.max(0, Math.min(100, Number(data.confidence)))
+    : null;
+  return { text, confidence };
 }
 
 async function resetWorkerAfterCrash() {
@@ -99,8 +102,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     .catch(() => {})
     .then(async () => {
       try {
-        const text = await recognizeDataUrl(msg.dataUrl);
-        sendResponse({ ok: true, text });
+        const result = await recognizeDataUrl(msg.dataUrl);
+        sendResponse({ ok: true, ...result });
       } catch (e) {
         console.error("[Vlog OCR] recognize error:", e);
         await resetWorkerAfterCrash();

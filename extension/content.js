@@ -97,6 +97,27 @@ function renderClickableTokens(el, text, lang) {
 let floatingWindow = null;
 let floatingOriginal = null;
 let floatingTranslated = null;
+let floatingOcrStatus = null;
+let ocrFontColor = "white";
+const ocrFontColorKey = "vlog_ocr_font_color";
+let ocrDataCollectionEnabled = false;
+const ocrDataCollectionKey = "vlog_ocr_data_collection_enabled";
+const ocrDatasetKey = "vlog_ocr_dataset_samples";
+const ocrDatasetTotalCountKey = "vlog_ocr_dataset_total_count";
+const ocrLabelMapKey = "vlog_ocr_label_map_v1";
+const ocrNoTextToken = "__NO_TEXT__";
+const ocrDatasetMaxSamples = 120;
+const ocrLowConfidenceThreshold = 70;
+const ocrTimeBucketSeconds = 1;
+let ocrLabelMap = {};
+
+chrome.storage.local.get([ocrDataCollectionKey, ocrLabelMapKey], (data) => {
+  ocrDataCollectionEnabled = Boolean(data[ocrDataCollectionKey]);
+  ocrLabelMap =
+    data[ocrLabelMapKey] && typeof data[ocrLabelMapKey] === "object"
+      ? data[ocrLabelMapKey]
+      : {};
+});
 
 function createFloatingWindow() {
   if (floatingWindow) return;
@@ -109,11 +130,28 @@ function createFloatingWindow() {
       <div class="vlog-float-original">等待识别…</div>
       <div class="vlog-float-translated"></div>
     </div>
+    <div class="vlog-ocr-status"></div>
+    <select class="vlog-ocr-color">
+      <option value="white">WHITE</option>
+      <option value="black">BLACK</option>
+    </select>
   `;
   document.body.appendChild(floatingWindow);
 
   floatingOriginal = floatingWindow.querySelector(".vlog-float-original");
   floatingTranslated = floatingWindow.querySelector(".vlog-float-translated");
+  floatingOcrStatus = floatingWindow.querySelector(".vlog-ocr-status");
+  const colorSelect = floatingWindow.querySelector(".vlog-ocr-color");
+  chrome.storage.local.get([ocrFontColorKey], (data) => {
+    if (data[ocrFontColorKey]) {
+      ocrFontColor = data[ocrFontColorKey];
+      colorSelect.value = ocrFontColor;
+    }
+  });
+  colorSelect.addEventListener("change", () => {
+    ocrFontColor = colorSelect.value;
+    chrome.storage.local.set({ [ocrFontColorKey]: ocrFontColor });
+  });
 
   // ── Drag logic ───────────────────────────────────────────────────────
   const handle = floatingWindow.querySelector(".vlog-drag-handle");
@@ -147,9 +185,25 @@ function createFloatingWindow() {
 }
 
 // Single entry point for BOTH DOM subtitles and OCR results
-function updateFloatingSubtitle(text, lang) {
+function updateFloatingSubtitle(text, lang, options = {}) {
   createFloatingWindow();
   floatingWindow.style.display = "flex";
+
+  const source = options.source || "dom";
+  const confidence = Number.isFinite(options.confidence)
+    ? Number(options.confidence)
+    : null;
+  if (source === "ocr" && confidence !== null) {
+    floatingOcrStatus.textContent = `OCR ${Math.round(confidence)}%`;
+    if (confidence < ocrLowConfidenceThreshold) {
+      floatingWindow.classList.add("vlog-ocr-low-confidence");
+    } else {
+      floatingWindow.classList.remove("vlog-ocr-low-confidence");
+    }
+  } else {
+    floatingOcrStatus.textContent = "";
+    floatingWindow.classList.remove("vlog-ocr-low-confidence");
+  }
 
   renderClickableTokens(floatingOriginal, text, lang);
   floatingTranslated.textContent = "翻译中…";
@@ -289,7 +343,16 @@ function captureVideoFrameDataUrl(video, region) {
   const canvas = document.createElement("canvas");
   canvas.width = sw;
   canvas.height = sh;
-  canvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  if (ocrFontColor === "white") {
+    ctx.filter = "contrast(1.6) brightness(1.15) saturate(1.05)";
+  } else {
+    ctx.filter = "contrast(1.6) brightness(0.9) saturate(1.05)";
+  }
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+  ctx.filter = "none";
 
   try {
     return canvas.toDataURL("image/png");
@@ -300,10 +363,269 @@ function captureVideoFrameDataUrl(video, region) {
   }
 }
 
+function storageGet(keys) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(keys, (data) => resolve(data));
+  });
+}
+
+function storageSet(payload) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(payload, () => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve();
+    });
+  });
+}
+
+function getVideoKey() {
+  const host = location.hostname;
+  const path = location.pathname || "";
+  const url = new URL(location.href);
+  if (host.includes("youtube.com")) {
+    const v = url.searchParams.get("v");
+    if (v) return `yt:${v}`;
+  }
+  if (host.includes("youtu.be")) {
+    const id = path.replace(/^\/+/, "").split("/")[0];
+    if (id) return `yt:${id}`;
+  }
+  if (host.includes("bilibili.com")) {
+    const m = path.match(/\/video\/(BV[0-9A-Za-z]+)/);
+    if (m) return `bili:${m[1]}`;
+  }
+  return `${host}${path}`;
+}
+
+function getTimeBucket(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
+  return Math.floor(seconds / ocrTimeBucketSeconds);
+}
+
+function normalizeOcrText(text) {
+  return String(text || "").trim();
+}
+
+function buildMatchKey(videoKey, timeBucket, rawText) {
+  return `${videoKey}|${timeBucket}|${normalizeOcrText(rawText)}`;
+}
+
+function findCorrectionInMap(videoKey, timeBucket, rawText) {
+  const key = buildMatchKey(videoKey, timeBucket, rawText);
+  if (typeof ocrLabelMap[key] === "string" && ocrLabelMap[key]) {
+    return ocrLabelMap[key];
+  }
+
+  const byVideo = ocrLabelMap[videoKey];
+  if (byVideo && typeof byVideo === "object") {
+    const byBucket = byVideo[String(timeBucket)];
+    if (byBucket && typeof byBucket === "object") {
+      const value = byBucket[normalizeOcrText(rawText)];
+      if (typeof value === "string" && value) return value;
+    }
+  }
+
+  return null;
+}
+
+function resolveCorrectedText(videoKey, timeBucket, rawText) {
+  if (!rawText) return null;
+  const buckets = [timeBucket - 1, timeBucket, timeBucket + 1];
+  for (const bucket of buckets) {
+    if (bucket < 0) continue;
+    const corrected = findCorrectionInMap(videoKey, bucket, rawText);
+    if (corrected) return corrected;
+  }
+  return null;
+}
+
+function compressOcrSampleDataUrl(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxWidth = 640;
+      const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.72));
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+let ocrDatasetWriteQueue = Promise.resolve();
+
+function queueOcrSample(sample) {
+  if (!ocrDataCollectionEnabled) return;
+
+  const prev = ocrDatasetWriteQueue;
+  ocrDatasetWriteQueue = Promise.resolve();
+  prev
+    .catch(() => {})
+    .then(async () => {
+      const compressedDataUrl = await compressOcrSampleDataUrl(sample.dataUrl);
+      if (!compressedDataUrl) return;
+
+      const data = await storageGet([ocrDatasetKey, ocrDatasetTotalCountKey]);
+      const list = Array.isArray(data[ocrDatasetKey]) ? data[ocrDatasetKey] : [];
+      const totalCount = Number.isFinite(Number(data[ocrDatasetTotalCountKey]))
+        ? Number(data[ocrDatasetTotalCountKey])
+        : 0;
+      const record = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        capturedAt: sample.capturedAt,
+        videoKey: sample.videoKey,
+        currentTimeSec: sample.currentTimeSec,
+        timeBucket: sample.timeBucket,
+        matchKey: sample.matchKey,
+        hostname: sample.hostname,
+        pageUrl: sample.pageUrl,
+        text: sample.text,
+        correctedText: sample.correctedText || null,
+        lang: sample.lang,
+        confidence: sample.confidence,
+        accepted: Boolean(sample.accepted),
+        dropReason: sample.dropReason || null,
+        cjkRatio: sample.cjkRatio,
+        fontColor: sample.fontColor,
+        region: sample.region,
+        frameSize: sample.frameSize,
+        imageDataUrl: compressedDataUrl,
+      };
+      list.unshift(record);
+      if (list.length > ocrDatasetMaxSamples) {
+        list.length = ocrDatasetMaxSamples;
+      }
+      await storageSet({
+        [ocrDatasetKey]: list,
+        [ocrDatasetTotalCountKey]: totalCount + 1,
+      });
+    });
+}
+
 let ocrInterval = null;
 let ocrInFlight = false; // prevent overlapping OCR requests
 let lastOcrText = "";
 let ocrRegion = { x: 0, y: 0.75, w: 1, h: 0.25 }; // default: bottom 25%
+const localOcrBridgeUrl = "http://127.0.0.1:3000/ocr";
+
+async function requestOcrFromLocalBridge(dataUrl) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), 8000);
+  let response;
+  try {
+    response = await fetch(localOcrBridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ image: dataUrl }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timerId);
+  }
+  if (!response.ok) {
+    throw new Error(`Local OCR bridge HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (payload && payload.error) {
+    throw new Error(payload.error);
+  }
+  const text = normalizeOcrText(payload && (payload.text || payload.texts));
+  let confidence = Number.isFinite(payload && payload.confidence)
+    ? Number(payload.confidence)
+    : null;
+  if (confidence !== null) {
+    confidence = confidence <= 1 ? confidence * 100 : confidence;
+    confidence = Math.max(0, Math.min(100, confidence));
+  }
+  return { ok: true, text, confidence };
+}
+
+function requestOcrFromExtension(dataUrl) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "OCR", dataUrl }, (res) => {
+      if (chrome.runtime.lastError) {
+        const message = chrome.runtime.lastError.message || "";
+        if (message.includes("Extension context invalidated")) {
+          stopOcrPolling();
+        }
+        resolve({ ok: false, error: message });
+        return;
+      }
+      resolve(res || { ok: false });
+    });
+  });
+}
+
+function handleOcrResult(video, dataUrl, res) {
+  if (!res || !res.ok) return;
+
+  const text = normalizeOcrText(res.text);
+  const confidence = Number.isFinite(res.confidence)
+    ? Number(res.confidence)
+    : null;
+  const currentTimeSec = Number.isFinite(video.currentTime)
+    ? Number(video.currentTime.toFixed(3))
+    : 0;
+  const timeBucket = getTimeBucket(currentTimeSec);
+  const videoKey = getVideoKey();
+  const matchKey = buildMatchKey(videoKey, timeBucket, text);
+  const lang = detectLang(text);
+  let cjkRatio = null;
+  let dropReason = null;
+
+  if (!text) {
+    dropReason = "empty_text";
+  } else if (text.length > 60) {
+    dropReason = "too_long";
+  } else {
+    const cjkCount = (text.match(/[\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FAF]/g) || []).length;
+    cjkRatio = cjkCount / text.length;
+    if (cjkRatio < 0.4) {
+      dropReason = "low_cjk_ratio";
+    } else if (!lang) {
+      dropReason = "lang_unknown";
+    } else if (text === lastOcrText) {
+      dropReason = "duplicate";
+    }
+  }
+
+  const correctedText = resolveCorrectedText(videoKey, timeBucket, text);
+
+  queueOcrSample({
+    capturedAt: Date.now(),
+    videoKey,
+    currentTimeSec,
+    timeBucket,
+    matchKey,
+    hostname: location.hostname,
+    pageUrl: `${location.origin}${location.pathname}`,
+    text,
+    correctedText,
+    lang,
+    confidence,
+    accepted: dropReason === null,
+    dropReason,
+    cjkRatio: cjkRatio === null ? null : Number(cjkRatio.toFixed(4)),
+    fontColor: ocrFontColor,
+    region: { ...ocrRegion },
+    frameSize: { width: video.videoWidth, height: video.videoHeight },
+    dataUrl,
+  });
+
+  if (dropReason) return;
+  lastOcrText = text;
+  if (correctedText === ocrNoTextToken) return;
+  const outputText = correctedText || text;
+  const outputLang = detectLang(outputText) || lang;
+  updateFloatingSubtitle(outputText, outputLang, { source: "ocr", confidence });
+}
 
 function startOcrPolling(video) {
   if (ocrInterval) return;
@@ -315,38 +637,19 @@ function startOcrPolling(video) {
 
     ocrInFlight = true;
 
-    // Tesseract lives in offscreen.js — content.js just ferries the frame
-    chrome.runtime.sendMessage({ type: "OCR", dataUrl }, (res) => {
-      ocrInFlight = false;
-
-      if (chrome.runtime.lastError) {
-        if (
-          chrome.runtime.lastError.message.includes(
-            "Extension context invalidated",
-          )
-        ) {
-          stopOcrPolling(); // extension was reloaded mid-session
+    (async () => {
+      try {
+        let res;
+        try {
+          res = await requestOcrFromLocalBridge(dataUrl);
+        } catch (_e) {
+          res = await requestOcrFromExtension(dataUrl);
         }
-        return;
+        handleOcrResult(video, dataUrl, res);
+      } finally {
+        ocrInFlight = false;
       }
-      if (!res || !res.ok || !res.text) return;
-
-      const text = res.text;
-
-      // Skip walls of text — real subtitles are short phrases
-      if (text.length > 60) return;
-
-      // Skip garbled output — at least 40% of chars must be Korean/Japanese
-      const cjkCount = (text.match(/[\uAC00-\uD7A3\u3040-\u30FF\u4E00-\u9FAF]/g) || []).length;
-      if (cjkCount / text.length < 0.4) return;
-
-      const lang = detectLang(text);
-      if (!lang || text === lastOcrText) return;
-      lastOcrText = text;
-
-      // Same entry point as DOM subtitles — unified floating window
-      updateFloatingSubtitle(text, lang);
-    });
+    })();
   }, 2000);
 }
 
@@ -508,7 +811,7 @@ function enable() {
   // Both DOM subtitles and OCR results feed into the same floating window
   startDomDetection((text, lang) => {
     if (currentMode === "ocr") switchToDomMode();
-    updateFloatingSubtitle(text, lang);
+    updateFloatingSubtitle(text, lang, { source: "dom" });
   });
 }
 
@@ -531,5 +834,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ enabled: false });
   } else if (msg.type === "GET_STATUS") {
     sendResponse({ enabled });
+  }
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") return;
+
+  if (changes[ocrFontColorKey]) {
+    ocrFontColor = changes[ocrFontColorKey].newValue || "white";
+    if (floatingWindow) {
+      const colorSelect = floatingWindow.querySelector(".vlog-ocr-color");
+      if (colorSelect) colorSelect.value = ocrFontColor;
+    }
+  }
+
+  if (changes[ocrDataCollectionKey]) {
+    ocrDataCollectionEnabled = Boolean(changes[ocrDataCollectionKey].newValue);
+  }
+
+  if (changes[ocrLabelMapKey]) {
+    const nextMap = changes[ocrLabelMapKey].newValue;
+    ocrLabelMap = nextMap && typeof nextMap === "object" ? nextMap : {};
   }
 });

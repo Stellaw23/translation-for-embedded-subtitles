@@ -1,0 +1,8 @@
+.DS_Store
+.superpowers
+
+tmp-macos-vision-ocr/
+tools/
+
+local-ocr-bridge/node_modules/
+node_modules/
